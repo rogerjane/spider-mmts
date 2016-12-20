@@ -1,0 +1,4 @@
+<SPIDER-RPC-Result spider-version="2.22k" version="0.00160129151044" status="2" error="10">
+  <error source="3rdparty.optimiseRx.rules.update" code="10" display="Error found in response" api-version="0.00160129151044"/>
+</SPIDER-RPC-Result>
+

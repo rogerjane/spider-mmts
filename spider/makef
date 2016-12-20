@@ -1,0 +1,37 @@
+# makefile hacked about to minimise it
+
+MAINFILE=spider.c
+MAINOBJ=spider.o
+
+PM2_INCPATH=$(PM2_BASE)/include
+PM2_LIBPATH=$(PM2_BASE)/libs
+
+INCLUDES=-I. -I$(PM2_INCPATH)
+
+CFLAGS=$(INCLUDES)  -I/usr/local/ssl/include -L$(PM2_LIBPATH) -L/usr/local/lib -DEHR_UNIXWARE
+CXXFLAGS=$(INCLUDES) -I/usr/local/ssl/include -L$(PM2_LIBPATH) -L/usr/local/lib -DUSING_SCO_SC -DEHR_UNIXWARE
+
+ID=spider
+
+it: $(ID)
+
+.cpp.o:
+	CC -c $(CXXFLAGS) $<
+
+.C.o:
+	CC -c $(CXXFLAGS) $<
+
+objects= spider.o
+
+$(ID): $(objects)
+	CC $(objects) -o $(PM2_BASE)/bin/./spider $(CXXFLAGS) -lssl -lcrypt -lmtutil -lmtsl3 -lnpfit -lxstring -lcrypto -lsocket -lnls  /usr/lib/libz.a -lm -lssl -lcrypt
+	@mcs -d $(PM2_BASE)/bin/./spider
+	rm $(MAINOBJ)
+
+clean:
+	rm -f  spider.o
+
+remake:
+	make -f spider.mak clean
+	make -f spider.mak spider
+

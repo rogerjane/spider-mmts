@@ -1,0 +1,6 @@
+guid *guid_FromSeedX(const char *szText, int nLen, unsigned int nType);
+guid *guid_FromSeed(const char *szText, int nLen);
+guid *guid_Gen();
+const char *guid_ToText(guid *g);
+guid *guid_FromText(const char *szText);
+int guid_Compare(const guid *a, const guid *b);

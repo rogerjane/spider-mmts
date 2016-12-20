@@ -1,0 +1,964 @@
+#!/usr/bin/perl
+
+## 24/08/05 RJ 0.1  Initial marking with a version number
+## 07/09/05 RJ 0.2  Lessons from live environment...
+## 16/09/05 RJ 0.3  More lessons from live environment...
+## 26/01/06 RJ 0.4  Creates an ASID file for the local surgery
+## 01/07/06 RJ 0.5  Uses alternative method to fetch v1 contracts (currently turned off)
+## 13/05/07 RJ 0.6  Sets the 'level' on contracts that need to be P1R2
+## 15/05/07 RJ 0.7  NACS intention checking and mickey & porky checking
+## 17/05/07 RJ 0.8  Tidied up Mickey and Porky checking
+## 18/05/07 RJ 0.9  Removed the Mickey and Porky checking as it's moved to 'bin/check'
+## 12/05/08 RJ 0.91 Added information on NIS places from 'the document'
+## 25/07/08 RJ 0.92 Corrected blank line returned from ldap queries
+## 27/01/09 RJ 0.93 Allowed 'v' as a NIS
+## 30/01/09 RJ 1.00 Implemented SQL style access to SDS
+
+$nis=0;					# Sandpit number (0 for live)
+
+require "/usr/mt/lib/mt.pl";
+
+# The following messages will be marked as p1r1 if their contracts are retrieved
+@p1r2msg=('PORX_IN020101UK04','PORX_IN020102UK04');
+
+sub GetVersion()
+# Sucks the version information from the script, i.e. this file.
+{
+    my $verline=0;
+    my $inver=0;
+    my $ver="?.??";
+
+    open ME, "$0";
+    for (<ME>) {
+        @parts=split;
+        $verline = ($parts[0] eq '##');
+        $inver = 1 if ($verline);
+        if ($inver) {
+            last if ! $verline;
+            $verdate=$parts[1];
+            $verinits=$parts[2];
+            $ver=$parts[3];
+        }
+    }
+    close ME;
+
+    return $ver;
+}
+
+sub GetMessages()
+# Sets up the %mim - mapping interation to mim version, %project mapping int to project
+# and %ints - a ':' separated list of interations in a project
+{
+	if (open M, "etc/messages") {
+		for (<M>) {
+			next if /^\s*$/;
+			next if /^\s*#/;
+			chomp;
+			push @messages, $_;
+		}
+		close M;
+	} else {
+		print "*** WARNING: Cannot read etc/messages - using default set\n";
+		my @messages=qw'PDSv2:4.2:QUPA_IN010000UK32 PDSv2:4.2:QUPA_IN020000UK31 PDSv2:4.2:QUPA_IN040000UK32 PDSv2:4.2:PRPA_IN040000UK30 PDSv2:4.2:PRPA_IN160000UK30 EPSv2:4.2:PORX_IN020101UK31 EPSv2:4.2:PORX_IN020102UK31 EPSv2:4.2:PORX_IN030101UK32 EPSv2:3.1.07:PORX_IN020101UK04 EPSv2:3.1.07:PORX_IN020102UK04 EPSv1:3.1.07:PORX_IN020101UK04 EPSv1:3.1.07:PORX_IN020102UK04 PDSv1:2.3:QUPA_IN040000UK01 PDSv1:2.3:PRPA_IN110000UK01 PDSv1:2.3:PRPA_IN120000UK01 CABv1:2.3:PRPA_IN020000UK02 CABv1:2.3:PRPA_IN030000UK03';
+	}
+# Add this back if we need the Acknowledgment contract (but it's not currently fetching properly anyway so needs dbg)
+#	push @messages, "ADM:2.3:Acknowledgment";
+	for (@messages) {
+		my ($project,$mim,$int)=split /:/;
+		$mim{$int}=$mim;
+		$project{$int}=$project;
+		$ints{$project}.=':' if $ints{$project};
+		$ints{$project}.=$int;
+	}
+}
+
+sub GetInteractions()
+{
+}
+
+sub Interaction2Mim($)
+{
+	my ($int)=@_;
+	my $mim;
+
+	return $mim{$int} if defined $mim{$int};		# Simple case
+
+	if ($int =~ /(...._..)(\d{6})UK(\d\d)/) {		# Figure it from the message version
+		my $type=$1;
+		my $number=$2;
+		my $version=$3;
+
+		if ($version < 4) {
+			$mim=2;
+		} else {
+			$mim=3;
+		}
+	}
+
+	return $mim;
+}
+
+sub sdsQuery($)
+# SELECT fields FROM base WHERE filter
+# SELECT * from services where objectclass='nhsmhscp' and nhsmhsactionname='QUPA_IN040000UK02'
+# sds "services", {objectclass=>'nhsmhscp',nhsMHSActionName=>$id}, '';
+{
+	my ($qry)=@_;
+	my @result;
+	my @fields;
+	my $scope="one";
+
+	my ($fields,$table,$where)=$qry=~/^SELECT\s+(.*?)\s+FROM\s+(.*?)\s+WHERE\s+(.*)/i;
+#	print "Base = '$table'\nFields = '$fields'\nWhere = '$where'\n";
+
+	if ($table =~ /(.*)\.(.*)/) {
+		$o=$2;
+		$ou=$1;
+	} else {
+		$o="nhs";
+		$ou=$table;
+	}
+	if ($ou =~ /,/) {
+		my @ou=split /\s*,\s*/, $ou;
+		for (@ou) { $_="ou=$_"; }
+		$ou=join",", @ou;
+	} else {
+		$ou="ou=$ou";
+	}
+
+	my $filter='';
+	my $count=0;
+	for my $wh (split /\s+and\s+/i,$where) {
+		my ($name,$value);
+
+		$count++;
+		if ($wh =~ /\w+\s*=/) {
+			($name,$value)=split /\s*=\s*/, $wh;
+			($value)=$value=~/^'(.*)'$/ if ($value =~ /^'.*'$/);
+			$filter.="($name=$value)";
+		} elsif ($wh =~ /(\w+)\s+like\s(.*)/i) {
+			$name=$1; $value=$2;
+			($value)=$value=~/^'(.*)'$/ if ($value =~ /^'.*'$/);
+			$value=~s/%/*/g;
+			$filter.="($name=$value)";
+		}
+	}
+	$filter="(&$filter)" if $count>1;
+
+	my $attrs='';
+	if ($fields ne '*') {
+		for my $f (split /\s*,\s*/, $fields) {
+			$attrs.=" $f";
+			push @fields, $f;
+		}
+	}
+
+	my $search="ldapsearch -x -H 'ldaps://$server' -b '$ou,o=$o' -s $scope '$filter'$attrs";
+#print "Search: $search\n";
+	my @output=`$search`;
+	if ($fields eq '*') {
+		my %fields;
+		my $f;
+		for (@output,'') {
+			if (($f)=/^(\w+):/) {
+				$f{$f}++;
+			} elsif (/^\s*$/) {
+				if ($f{'dn'}) {
+					for (keys %f) {
+						$fields{$_}++;
+					}
+				}
+				undef %f;
+			}
+		}
+		for (sort keys %fields) {
+			push @fields, $_;
+		}
+	}
+	for (@fields) { $_=lc $_; }
+
+	push @result, join("\t", @fields);
+	my $dn='';
+	my $prev='';
+	my %value;
+	for my $line (@output) {
+		chomp $line;
+#print "Line: $line\n" if $querydebug;
+		if ($line =~ /^#/) {
+			next;
+		} elsif ($line =~ /^\s*$/) {		# Blank line - Record split
+			if ($prev) {
+				my ($name,$value)=$prev=~/^(\w+):\s*(.*)/;
+				$name=lc $name;
+				if ($value{$name}) {
+					$value{$name}.=",$value";
+				} else {
+					$value{$name}=$value;
+				}
+				$prev='';
+			}
+			if ($value{'dn'}) {		# We'll always have one of these in a real record
+				my $res='';
+				for my $f (@fields) {
+					$res.="\t" if $res;
+					$res.=$value{$f};
+				}
+				push @result, $res if $res;
+#if ($res) { print "push result, $res\n"; exit if $iuhiuhi++ > 10; }
+			}
+			undef %value;
+		} elsif ($line =~ /^ /) {
+			$line =~ s/^ //;
+			$prev.=$line;
+		} else {
+			if ($prev) {
+				my ($name,$value)=$prev=~/^(\w+):\s*(.*)/;
+				$name=lc $name;
+				if ($value{$name}) {
+					$value{$name}.=",$value";
+				} else {
+					$value{$name}=$value;
+				}
+			}
+			$prev=$line;
+		}
+	}
+
+	return @result;
+}
+
+sub sdsQueryOne($)
+# Executes an SDS query that returns a single result (ignores any but the first) and returns a hash
+{
+	my @result=sdsQuery($_[0]);
+	return sql_ToHash($result[0], $result[1]);
+}
+
+sub sdsQueryTable($)
+# For debugging really - prints result a bit like 'sql' does
+{
+	my @tab=sdsQuery($_[0]);
+	my $rowcount=0;
+
+	if ($#tab > 0) {
+		my $cols=-1;
+		$rowcount=-1;		# Compensate for header row
+		for (@tab) {
+			@f=split /\t/;
+			for $i (0..$#f) {
+				$len[$i] = length($f[$i]) if (length($f[$i]) > $len[$i]);
+			}
+			$cols=$#f if $#f > $cols;
+		}
+		for (0..$cols) { print "+", "-" x $len[$_]; } print "+\n";
+		for (@tab) {
+			@f=split /\t/;
+			for $i (0..$cols) {
+				printf "|%-*s", $len[$i], $f[$i];
+			}
+			print "|\n";
+			if (++$rowcount == 0) {
+				for (0..$cols) { print "+", "-" x $len[$_]; } print "+\n";
+			}
+		}
+		for (0..$cols) { print "+", "-" x $len[$_]; } print "+\n";
+	}
+	print "Rows returned: $rowcount\n";
+}
+
+sub sdsQueryTableG($)
+# For debugging really - prints result a bit like 'sql' does when you end a command with \G
+{
+	my @tab=sdsQuery($_[0]);
+	my $rowcount=0;
+	my $head=shift @tab;
+	my @head=split /\t/, $head;
+	my $max=0;
+	my $rowcount=0;
+	my $lastcol=$#head;
+
+	for (@head) {
+		$max=length if length > $max;
+	}
+	for $row (@tab) {
+		$rowcount++;
+		@row=split /\t/, $row;
+		for $col (0..$lastcol) {
+			printf "%*s: %s\n", $max, $head[$col], $row[$col];
+		}
+		print "\n";
+	}
+	print "Rows returned: $rowcount\n";
+}
+
+sub sds($$$)
+{
+	my ($base,$filter,$attrs)=@_;
+print "I'm in sds...\n"; ($p,$f,$l)=caller; print "Called from $p - $f() at $l\n";exit 0;
+
+	undef my @result;
+	undef my @output;
+	
+	my %filter=%$filter;
+	my $count=0;
+	my $f='';
+	for (keys %filter) {
+		$count++;
+		$f.="($_=$filter{$_})";
+	}
+	$f="(&$f)" if $count > 1;
+	$filter=$f;
+	
+	my $base="ou=$base, o=nhs";		# Expand to full searchbase
+
+	my $attrs="'$attrs'" if $attrs;
+
+	my $search="ldapsearch -x -H 'ldaps://$server' -b '$base' '$filter' $attrs";
+
+#print ": $search\n";
+#print "Searchbase: $base\nFilter: $filter\n"; print "Attributes: $attrs\n" if ($attrs);
+	@output=`$search`;
+
+	my $prev='';
+	for (@output) {
+		chomp;
+		next if /^#/;				# Strip comments
+		if (/^ /) {					# Starts with a space - a continuation line
+			s/^ //;					# Drop the leading space
+			$prev.=$_;				# Tack it onto the previous line
+		} else {					# Starter line so push anything we're holding and start a new one with this
+			push @result, $prev;
+			$prev=$_;
+		}
+	}
+	push @result, $prev if $prev;
+
+	return @result;
+}
+
+sub Extract($$)
+{
+	my ($find,$array)=@_;
+	undef my @extract;
+
+	$find=lc $find;
+	for (@$array) {
+		($name,$value)=split /:\s*/,$_,2;
+		push @extract, $value if (lc $name eq $find);
+	}
+
+	return @extract;
+}
+
+sub Extract1($$)
+{
+	my ($find,$array)=@_;
+	my @result=Extract $find, $array;
+
+	return $result[0] if (@result);
+
+	return undef;
+}
+
+sub ReadHash($)
+{
+	my ($file)=@_;
+	undef my %hash;
+
+	if (open FILE, $file) {
+		for (<FILE>) {
+			chomp;
+			next if /^#/;				# Skip comments
+			next if /^$/;				# Skip blank lines
+			if (/=/) {
+				my ($name,$value)=split /\s*=\s*/, $_, 2;
+				$hash{$name}=$value if $name ne '';
+			}
+		}
+		close FILE;
+	}
+
+	return %hash;
+}
+
+sub UpdateFile($$)
+{
+	my ($filename,$phash)=@_;
+
+	my %hash=%$phash;
+
+	undef my @con;
+
+	# Read in any existing file amending any that match updates
+	undef my %seen;
+	if (open CON, $filename) {					# Exists already
+		for (<CON>) {
+			chomp;
+			my $name='';
+			my $value='';
+			undef $line;
+			if (/=/) {
+				unless (/^#/) {					# Don't parse comments
+					($name,$value)=split /\s*=\s*/, $_, 2;
+					$name=~s/^\s*//;
+					$value=~s/\s*$//;
+				}
+			}
+			if ($name) {
+				unless ($seen{$name}) {				# Ignore duplicates
+					$seen{$name}=1;
+					if (defined $hash{$name}) {		# Got an update
+						$value=$hash{$name};
+						delete $hash{$name};
+					}
+					$line="$name=$value";
+				}
+			} else {
+				$line=$_;
+			}
+			push @con, $line if defined $line;
+		}
+		close CON;
+	}
+
+	# Put any remaining updates on the end
+	for (sort keys %hash) {
+		push @con, "$_=$hash{$_}";
+	}
+
+	# Write it all back
+	if (open CON, ">$filename") {
+		for (@con) {
+			print CON "$_\n";
+		}
+		close CON;
+	}
+#print "Updated $filename\n";
+}
+
+sub UpdateContract($$$)
+{
+	my ($partykey, $interaction,$phash)=@_;
+
+	system "mkdir -p 'contracts/$partykey'";
+	my $filename="contracts/$partykey/$interaction";
+
+	UpdateFile $filename, $phash;
+}
+
+sub GetContract($$)
+# This is supposed to get a single contract from LDAP, which is going to be
+# very slow but see the email from amija.alex@bt.com on 29-6-06 12:26
+# This says to fetch the contract from the address below as otherwise
+# parts of it (significantly 'DuplicateElimination' will be wrong.
+# However, the format of the record from this location is different
+# and some parts are not present (e.g. nhsmhssn), which I use!
+# A combination of the original location and this one seems too contrived
+# to be correct...
+{
+	my ($int,$spinekey)=@_;
+	my %con;
+
+	my $mim=Interaction2Mim($int);
+
+	if ($mim < 3) {
+		%contract=sdsQueryOne("SELECT * from services where objectclass='nhsmhs' AND nhsmhspartykey='$spinekey' and nhsmhsin='$int'");
+		my %mim2=sdsQueryOne("SELECT * from services where objectclass='nhsmhscp' AND nhsmhsactionname='$int'");
+#		$contract{nhsmhsendpoint}=$mim2{nhsmhsendpoint};
+		$contract{nhsmhscpaid}=$mim2{uniqueidentifier};
+		$contract{nhsmhswrapper}='nasp' unless $mim2{nhsmhsretryinterval};
+	} else {
+		%contract=sdsQueryOne("SELECT * from services where objectclass='nhsmhs' AND nhsmhspartykey='$spinekey' and nhsmhsin='$int'");
+	}
+
+#print "$mim ($spinekey)\t$int: Endpoint = '$contract{nhsmhsendpoint}'\n";
+#	for (keys %contract) { print ">>> $_ = $contract{$_}\n"; }
+
+	for (keys %contract) {
+		if (/^nhsmhs/) {
+			my $old=$_;
+			s/^nhsmhs//;
+			$con{$_}=$contract{$old};
+		}
+	}
+
+	for (@p1r2msg) {
+		$con{level}="P1R2" if $interaction eq $_;
+	}
+
+	UpdateContract $partyid, $int, \%con;
+}
+
+sub GetContracts($)
+{
+	my ($partykey)=@_;
+
+	print "Updating contracts for $name ($partykey) - ";
+	my $count=0;
+#print "\n\n-------------------\n\n";
+#	sdsQueryTable("SELECT * from services where objectclass='nhsmhs' and nhsmhspartykey='$partykey'");
+	@contracts=sdsQuery("SELECT * from services where objectclass='nhsmhs' and nhsmhspartykey='$partykey'");
+	$heads=shift @contracts;
+	for $contract (@contracts) {
+		%contract=sql_ToHash($heads,$contract);
+		$service=$contract{'nhsmhssvcia'};
+		
+		print "\r$service - ";
+		%contract=sdsQueryOne("SELECT * from services where objectclass='nhsmhs' and nhsmhspartykey='$partykey' and nhsMhsSvcIA='$service'");
+		print "Collected      ";
+		$interaction=$contract{nhsmhsin};
+		undef %con;					# Make just 'nhsmhs' entries
+		for (keys %contract) {
+			if (/^nhsmhs/) {
+				my $old=$_;
+				s/^nhsmhs//;
+				$con{$_}=$contract{$old};
+			}
+		}
+		for (@p1r2msg) {
+			$con{level}="P1R2" if $interaction eq $_;
+		}
+		UpdateContract $partyid, $interaction, \%con;
+		$count++;
+		undef %contract;
+	}
+	print "updated $count contracts\n";
+#	for (@contracts) { print "$name > $_\n"; }
+}
+
+sub PartyIdFromNacs($)
+{
+	my ($nacs)=@_;
+
+	@partys=sds "services", {objectclass=>nhsmhs,nhsidcode=>$nacs}, '';
+for (@partys) { print ">>$_\n"; }
+	@partyid=Extract "nhsMHSPartyKey", \@partys;
+
+	return $partyid[0];
+}
+
+sub GuessNacs
+{
+	my $cfg="../DTSClient/dtsclient.cfg";	# '..' helps protect against bad pwd
+	undef my $nacs;
+
+	if (open CFG, $cfg) {
+		for (<CFG>) {
+			if (/ClientIdentity>(.*)<\/ClientIdentity>/) {
+				$nacs=$1;
+				last;
+			}
+		}
+		close CFG;
+	}
+
+	if ($nacs) {
+		$nacs = uc substr($nacs, 0, 6);
+	}
+
+	return $nacs;
+}
+
+sub GetAddress($)
+{
+	my ($nacs)=@_;
+	my ($name,$address);
+
+	my %orginfo=sdsQueryOne("SELECT o,postalAddress,postalCode from organisations where nhsidcode='$nacs'");
+	$name=$orginfo{o};
+	my $addr=$orginfo{postaladdress};
+	my $postcode=$orginfo{postalcode};
+	my @lines=split /\$/, $addr.'$'.$postcode;
+	for (@lines) {
+		$address.="$_\n" if $_;
+	}
+
+	return ($name, $address);
+}
+
+sub SetEnvironment($)
+# Sets the environment and returns a suitable descriptive string or undef if not recognised
+{
+	my ($env)=@_;
+	my $environment;
+
+	$env=lc $env;
+	return undef if $env eq 'nis';		# Invalid but will get converted to live, which would be confusing
+	$env=~s/^nis\s*//;
+
+	if ($env =~ /^\d+$/) {
+		$server="ldap.nis$env.national.ncrs.nhs.uk";
+		$environment="sandpit $env";
+		if ($nis eq '1') {
+			%spines=(etp=>'YEA-801248',cab=>'T141A-0000202');
+		} elsif ($nis eq '2') {
+			$environment=undef;
+		} elsif ($nis eq '3') {
+			%spines=(etp=>'YEA-0001581',cab=>'T141A-0000360');
+		} elsif ($nis eq '4') {
+			%spines=(etp=>'YEA-801248',cab=>'YEC-0001248',cabmc=>'YEZ-0002031');
+		} elsif ($nis eq '5') {
+			%spines=(etp=>'YEA-0000805',cab=>'YEC-0000605');
+		} else {
+			$environment=undef;
+		}
+	} elsif ($env eq 'live' || $env eq '' || $env eq '0') {
+		$server="ldap.national.ncrs.nhs.uk";
+		$environment="live";
+		%spines=(etp=>'YEA-0000806',cab=>'YEC-0000608');
+	} elsif ($env eq 'v' || $env eq 'vnis' || $env eq 'a') {	# VNIS(a)
+		%spines=(etp=>'YEA-801332',cab=>'YEA-801332');
+		$server="vnisA-sdsp-01.vnis1.national.ncrs.nhs.uk";
+		$environment="sandpit vnis-2";
+	}
+
+	$spines{'pds'}=$spines{'etp'} unless $spines{'pds'};
+
+	return $environment;
+}
+
+sub ShowAddress()
+{
+	my $addrline=0;
+
+	print "Name:       $myname\n";
+	for (split /\n/, $myaddress) {
+		print $addrline++ ? "            " : "Address:    ";
+		print "$_\n";
+	}
+}
+
+sub DoSetup()
+{
+	print "Setting up for organisation $nacs...\n";
+	$querydebug=1;
+
+	($myname,$myaddress)=GetAddress $nacs;
+	ShowAddress();
+
+	my %mminfo=sdsQueryOne("SELECT * from services where nhsAsClient='$nacs' AND objectClass='nhsAs' and nhsAsSvcIA='urn:nhs:names:services:mm:MCCI_IN010000UK*'");
+
+	$mypartyid=$mminfo{'nhsmhspartykey'};
+
+	unless ($nacs && $mypartyid) {
+		print STDERR "Something wrong in finding NACS code and party ID:\n";
+		print STDERR "NACS    = '$nacs'\n";
+		print STDERR "PartyId = '$mypartyid'\n";
+		print STDERR "No NACS code in mmts.conf and I can't get it from ../DTSClient/dtsclient.cfg\n";
+		return;
+	}
+
+	$conf{partyid}=$mypartyid;
+	$conf{'partyid-practice'}=$mypartyid;
+	$conf{nacs}=$nacs;
+	print "NACS:       $nacs\n";
+	print "PartyKey:   $mypartyid\n";
+
+	for $code (keys %spines) {
+		$conf{"partyid-$code"}=$spines{$code} unless $conf{"partyid-spine$code"};
+		$setting=$conf{"partyid-spine$code"};
+		if ($setting ne $spines{$code}) {
+			print "*** WARNING: partyid-spine$code is configured as '$setting', I think it should be $spines{$code}\n";
+		}
+	}
+
+	UpdateFile "mmts.conf", \%conf;
+
+	mkdir "contracts", 0777;
+	mkdir "ldap", 0777;
+	mkdir "ldap/partyid", 0777;
+
+# The following might be supposed to tell us what services are supported but it seems broken, at least in VNIS2
+if (0) {
+	%partyinfo=sdsQueryOne("select nhsAsSvcIA,uniqueidentifier from services where objectclass='nhsas' and nhsmhspartykey='$mypartyid'");
+	my @services=split /,/,$partyinfo{'nhsassvcia'};
+	for (@services) {
+		my ($service,$interaction)=/(.*):(.*)/;
+		print "Suppouting $interaction\n";
+ 	}
+}
+
+# Get all the information the spine regarding the MHS and AS (Application System)
+	%mymhsinfo=sdsQueryOne("SELECT * FROM services WHERE objectclass='nhsmhs' AND nhsmhsin = 'MCCI_IN010000UK12' AND nhsmhspartykey='$mypartyid'");
+	%myasinfo=sdsQueryOne("SELECT * FROM services WHERE objectclass='nhsas' AND nhsmhspartykey='$mypartyid'");
+	$myendpoint=$mymhsinfo{nhsmhsendpoint};
+	$myasid=$myasinfo{uniqueidentifier};
+	$myproduct=$myasinfo{nhsproductname};
+	print "Endpoint:   $myendpoint\n";
+	print "ASID:       $myasid\n";
+	print "Product:    $myproduct\n";
+
+# for (keys %mymhsinfo) { print "MyMhs($_) = $mymhsinfo{$_}\n"; }
+# for (keys %myasinfo) { print "MyAs($_) = $myasinfo{$_}\n"; }
+
+# Collect the services we can handle (but we're not interested any more so they're commented out)
+# @cando=split /,/,$myasinfo{'nhsassvcia'};
+# $services=$#cando+1;
+# for (@cando) { print "Cando: $_\n"; } exit 0;
+# printf "Recognises: %d message type%s\n", $#messagesin+1, $#messagesin?"s":"";
+
+	if ($myasid) {
+		$conf{'asid'}=$myasid;					# Set ASID in conf file
+		$conf{'asid-asid'}=$myasid;				# Set other ASID in conf file
+		UpdateFile "ldap/partyid/$mypartyid", {asid=>$asid};
+	} else {
+		print "I can't get the ASID for $mypartyid - P1R1 only?\n";
+	}
+
+	for (sort keys %conf) {
+		if (/^partyid-/) {			# Select all partyid- lines
+			chomp;
+			(undef,$name)=split /-/, $_, 2;
+			$name = lc $name;
+			next if ($name eq 'practice');		# Don't want the practice contracts - they're incoming
+				$partyid=$conf{$_};
+			$wanted{$partyid}++;			# Note that we want the contracts
+		}
+	}
+
+#	for (sort keys %ints) { print "Project $_ - $ints{$_}\n"; }
+#	for (keys %spines) { print "Spine($_) = $spines{$_}\n"; }
+
+	$projects=$conf{'projects'};
+	$projects="etp,pds,cab" unless $projects;
+	$projects.=",adm" unless $projects=~/adm/;
+	print "Contracts:\n";
+	for my $p (sort split /\s*,\s*/, $projects) {			# Each project (CAB, EPS, PDS...)
+		my ($spineproj,$project)=($p,$p);
+		
+		$project = uc $project;
+		$spineproj = lc $spineproj;
+		$spineproj='etp' if $spineproj eq 'eps';		# Deal with problem of 'spineetp' meaning 'eps'
+		$project='EPS' if $project eq 'ETP';			# Deal with problem of 'spineetp' meaning 'eps'
+		my $spinekey=$spines{$spineproj};				# $spine - spine endpoint
+		for my $projectv (sort keys %ints) {				# Each projectv (CABv1, EPSv1...)
+			if (substr($projectv,0,length($project)) eq $project) {
+				printf "  %-9s", "$projectv:";
+				my $tab=11;
+				my $pos=$tab;
+				for $int (sort split /:/, $ints{$projectv}) {	# Each interaction in $projectv
+					GetContract($int, $spinekey);
+					if ($pos+length($int)>75) {
+						print "\n".' ' x $tab;
+						$pos=$tab;
+					}
+					print " $int";
+					$pos+=length($int)+1;
+				}
+				print "\n";
+			}
+		}
+	}
+exit 0;
+		
+#			$mim{$int}=$mim;
+#			$project{$int}=$project;
+#			$ints{$project}.=':' if $ints{$project};
+#			$ints{$project}.=$int;
+	for $partyid (sort keys %wanted) {
+		$asid=sdsQueryOne("SELECT uniqueidentifier from services where objectclass='nhsas' and nhsmhspartykey='$partyid'");
+		$conf{"asid-$partyid"}=$asid;
+		print "ASID:        $asid for $partyid\n";
+		GetContracts $partyid;
+	}
+	UpdateFile "mmts.conf", \%conf;
+}
+
+sub CommandLoop()
+# Interactive loop
+{
+	use Term::ReadLine;
+	my $command;
+
+	$prompt="Setup> ";
+	$term=new Term::ReadLine 'setup';
+	my %features = %{$term->Features};
+	$term->ornaments() if $features{ornaments};
+
+	print "NACS = '$nacs', PartyKey = '$mypartyid'\n";
+
+	while (defined ($command = $term->readline($prompt))) {
+		my ($rest);
+		if ($command =~ /^\s*!(.*)/) {
+			system $1;
+			next;
+		}
+		$command=~s/^\s+//;
+		($command,$rest)=$command=~/^\s*(\w+?)\s+(.*)/ if ($command =~ /\s/);
+		$command=lc $command;
+#print "[$command] '$rest'\n";
+		if ($command eq 'quit' || $command eq 'q') {
+			last;
+		} elsif ($command eq 'select') {
+			sdsQueryTable("SELECT $rest");
+		} elsif ($command eq 'use') {
+			$env=SetEnvironment($rest);
+			if ($env) {
+				print "Using $env environment\n";
+			} else {
+				print "Unrecognised environment\n";
+			}
+		} elsif ($command eq 'get') {
+			$rest = lc $rest;
+
+			if ($rest eq 'address') {
+				($myname,$myaddress)=GetAddress $nacs;
+				ShowAddress();
+			}
+		} else {
+			print "Unrecognised command '$command'\n";
+		}
+	}
+}
+
+#main()
+
+select((select(STDOUT), $| = 1)[0]);		# So messages are cooler...
+
+undef $nis;
+
+if ($ARGV[0] =~ /^-s(.*)/) {
+	if ($1 ne '') {
+		$nis=$1;
+	} else {
+		$nis=$ARGV[1];
+		shift;
+	}
+	shift;
+}
+
+GetMessages();					# Get messages database
+GetInteractions();				# Get interaction database
+
+$interactive=1 if $ARGV[0] eq 'i';
+
+if (defined $nis) {
+	$environment=SetEnvironment($nis);
+	if (!$environment) {
+		print STDERR "Environment '$nis' not recognised\n";
+		exit 2;
+	}
+} else {
+	print STDERR "Environment must be given (-s)\n";
+	exit 1;
+}
+
+$ver=GetVersion;
+print "mmts-setup version $ver: Using $environment environment\n";
+
+%conf=ReadHash "mmts.conf";
+
+$nacs=uc $conf{nacs};
+$GuessedNacs = GuessNacs();
+
+if ($nacs && $GuessedNacs && $nacs ne $GuessedNacs) {
+	print "*** WARNING NACS code in mmts.conf ($nacs) doesn't match system ($GuessedNacs)...\n";
+	print "***         You are setting up $nacs - if this is not the intention, remove\n";
+	print "***         the NACS code from mmts.conf or even delete mmts.conf\n";
+}
+
+$nacs=$GuessedNacs unless $nacs;
+if (!$nacs) {
+	print "NACS code not found in mmts.conf and I've failed to guess it.\n";
+	print "Please put a 'nacs=whatever' line into mmts.conf\n";
+	exit 2;
+}
+
+DoSetup();
+exit 0;
+
+#-----------------
+GetContract("PRPA_IN110000UK01","YEA-801332");
+GetContract("PORX_IN020101UK31","YEA-801332");
+exit 0;
+$int="PRPA_IN110000UK01";
+#$int="PORX_IN020101UK31";
+print "MIM 2.3...\n";
+#sdsQueryTableG("SELECT * from services where nhsmhsactionname='$int'");
+sdsQueryTableG("SELECT * from services where objectclass='nhsmhscp' AND nhsmhsactionname='$int'");
+
+print "MIM 3+\n";
+sdsQueryTableG("SELECT * from services where objectclass='nhsmhs' AND nhsmhspartykey='YEA-801332' and nhsmhsin='$int'");
+
+exit 0;
+#-----------------
+
+($name,$address)=GetAddress($nacs);
+$mypartyid=$conf{partyid};
+if (! $mypartyid) {
+	$nacs=$GuessedNacs unless $nacs;
+	$mypartyid=PartyIdFromNacs $nacs if $nacs;
+}
+
+if (! $nacs && $mypartyid) {
+	$mypartyid=~/(.*)-/;
+	$nacs=$1;
+}
+
+if (! $nacs || !$mypartyid) {
+	print "No NACS code found\n" if !$nacs;
+	print "No PARTY KEY code found\n" if !$partyid;
+	exit 0;
+}
+
+
+if ($interactive) {
+	CommandLoop();
+	exit 0;
+}
+
+print "nacs='$nacs' ($GuessedNacs)\npartyid='$mypartyid'\n"; exit 0;
+
+DoSetup();
+
+
+exit 0;
+
+__END__
+
+#sdsQueryTableG("SELECT * from services where objectclass='nhsas' and nhsidcode like '8HA94'");
+#sdsQueryTable("SELECT nhsasclient from services where objectclass='nhsas' and nhsassvcia = 'urn:nhs:names:services:ebs:MCCI_IN010000UK13'");
+sdsQueryTable("SELECT * from organisations where o like 'microtest%'");
+exit 0;
+##Finds the demographic information for the organisation
+##my %orginfo=sdsQueryOne("SELECT * from organisations where nhsidcode='$nacs'");
+
+#my %orginfo=sdsQueryOne("SELECT * from services where objectclass='nhsas' and nhsasclient='$nacs'");
+for (keys %orginfo) {
+	print "$_ = $orginfo{$_}\n";
+}
+exit 0;
+
+# Contract properties for a MIM2.3 message
+# ldapsearch -h ldap.spine.nhs.uk -b "ou=Services, o=nhs" -s one "(nhsMhsActionName=PRPA_IN110000UK01)"
+# SELECT * from services where nhsmhsactionname=$interaction
+# Or for MIM3+...
+# ldapsearch -x -H 'ldaps://vnisA-sdsp-01.vnis1.national.ncrs.nhs.uk' -b 'ou=services,o=nhs' '(&(objectClass=nhsMhs)(nhsMhsPartyKey=YEA-801248)(nhsmhssvcia=urn:nhs:names:services:mm:PORX_IN020101UK31))'
+
+
+
+# Fetches all the services accepted by the party
+#sdsQueryTable("SELECT nhsAsSvcIA from services where nhsmhspartykey='$spineetp'");
+
+# Fetches the NACS code for the spine (doesn't work in the VNIS)...
+#sdsQueryTable("SELECT nhsIdCode from organisations where o='NATIONAL CARE RECORDS SERVICE SPINE'");
+
+# Gets the unique identifier etc. for YEA services that can handle the interaction
+#sdsQueryTable("select uniqueidentifier, nhsmhspartykey from services where nhsasclient = 'YEA' and objectclass='nhsas' and nhsassvcia='urn:nhs:names:services:pds:PRPA_IN110000UK15'");
+
+#sdsQueryTable("select uniqueidentifier, nhsmhspartykey,nhsmhsendpoint from services where nhsmhspartykey = 'YEA-801332' and objectclass='nhsmhs' and nhsassvcia like '%PRPA_IN11%'");
+
+
+#sdsQueryTable("select uniqueidentifier, nhsmhspartykey from services where nhsAsClient='YEE' and objectclass='nhsas' and nhsassvcia='urn:nhs:names:services:pds:PRPA_IN110000UK15'");
+
+#sdsQueryTable("SELECT uniqueidentifier,o,nhscountry, postalcode from organisations WHERE postalcode like 'PL%'");
+#sdsQueryTable("select * from services where objectclass='nhsmhs' and nhsidcode='$nacs'");
+#sdsQueryTable("select nhsassvcia,uniqueIdentifier from services where objectclass='nhsmhs' and nhsidcode='$nacs'");
+#sdsQueryTable("select * from services where objectclass='nhsmhs'");
+#@stuff=sdsQuery("select * from services where objectclass='nhsmhs' and nhsidcode='$nacs'");
+#for (@stuff) { print sql_TabToCsv($_),"\n"; }
+#sdsQueryTable("select * from organisations where nhsidcode='$nacs'");
+#exit 0;
+
+#Get the possible organisation types (NB. the EIS says that it should be "organisations,types,referencedata"
+#sdsQueryTableG("SELECT * from types,referencedata where objectclass='nhslist'");

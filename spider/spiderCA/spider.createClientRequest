@@ -1,0 +1,40 @@
+:
+
+## 10-05-14 RJ 0.00 Create a client certificate request for SPIDER
+
+# This is really only meant as a guide - I expect it to be a web interface at some point
+
+# Town seems to get dropped from the generated certificate
+TOWN=Town
+
+ORGANISATION=$1
+PRODUCT=$2
+
+[ ! "$ORGANISATION" ] && ORGANISATION='Organisation'
+[ ! "$PRODUCT" ] && PRODUCT='Product'
+
+KEYFILE=$ORGANISATION.key.pem
+REQUESTFILE=$ORGANISATION.$PRODUCT.req.pem
+
+# Generate a private key:
+
+[ ! -f "$KEYFILE" ] && openssl genrsa -out $KEYFILE 2048
+
+# Generate a certificate request using private key:
+
+openssl req -new -key $KEYFILE -out $REQUESTFILE <<EOT
+UK
+Cornwall
+$TOWN
+Microtest Ltd
+SPIDER:CLIENT
+${ORGANISATION}:${PRODUCT}
+
+
+
+EOT
+
+echo ""
+echo Submit $REQUESTFILE to Microtest for signing.
+
+exit 0

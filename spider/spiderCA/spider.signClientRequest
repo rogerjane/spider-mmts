@@ -1,0 +1,61 @@
+#!/bin/sh
+
+## 10-05-14 RJ 0.00 Sign a client certificate request, generating a certificate for them
+## 03-10-14 RJ 0.01 Modified to create .der version and client.bundle.pem for testing
+
+REQUESTFILE=$1
+DAYS=$2
+
+[ ! "$DAYS" ] && DAYS=366
+
+if [ ! -f "$REQUESTFILE" ]; then
+	echo "I need the name of a request file"
+	exit 1;
+fi
+
+if [ ! -d demoCA ]; then
+	echo "I need to be run in the CA directory containing the 'demoCA' sub-directory"
+	exit 2;
+fi
+
+REQUESTDIR=`dirname $REQUESTFILE`
+CERTIFICATEBASE=`echo $REQUESTFILE | sed 's/.req.pem$//'`
+CERTIFICATEFILE="${CERTIFICATEBASE}.cert.pem"
+CERTIFICATEDER="${CERTIFICATEBASE}.cert.der"
+BASEBASE=`echo "$CERTIFICATEBASE" | sed 's/\(.*\)\..*/\1/'`
+KEYFILE="${BASEBASE}.key.pem"
+BUNDLE="$REQUESTDIR/client.bundle.pem"
+CAFILE="$REQUESTDIR/spiderca.cert.pem"
+
+if false; then
+echo REQUESTDIR=$REQUESTDIR
+echo CERTIFICATEBASE=$CERTIFICATEBASE
+echo CERTIFICATEFILE=$CERTIFICATEFILE
+echo CERTIFICATEDER=$CERTIFICATEDER
+echo BASEBASE=$BASEBASE
+echo KEYFILE=$KEYFILE
+echo BUNDLE=$BUNDLE
+echo CAFILE=$CAFILE
+fi
+
+openssl ca -in "$REQUESTFILE" -out "$CERTIFICATEFILE" -days $DAYS <<EOT
+y
+y
+EOT
+
+if [ -f "$CERTIFICATEFILE" ]; then
+	cp demoCA/cacert.pem "$CAFILE"
+	openssl x509 -outform der -in "$CERTIFICATEFILE" -out "$CERTIFICATEDER"
+	cat "$CERTIFICATEFILE" "$CAFILE" "$KEYFILE" > "$BUNDLE"
+
+	echo "--------------------------------------------------------------------"
+	echo "Check the above for any sign of obvious errors..."
+	echo "===================================================================="
+	echo "The signed certificate and spider CA certificate are in $REQUESTDIR:"
+	echo "  $CERTIFICATEFILE"
+	echo "  $CAFILE"
+else
+	echo "Something has gone wrong - sorry. ($CERTIFICATEFILE didn't get created)"
+fi
+
+exit 0

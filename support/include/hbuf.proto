@@ -1,0 +1,26 @@
+HBUF *hbuf_New();
+void hbuf_Delete(HBUF *h);
+void hbuf_SetBufferSize(HBUF *h, int size);
+const char *hbuf_GetBuffer(HBUF *h);
+int hbuf_GetLength(HBUF *h);
+const char *hbuf_ReleaseBuffer(HBUF *h);
+const char *hbuf_SetBuffer(HBUF *h, int len, const char *buf);
+void hbuf_AddChar(HBUF *h, char c);
+void hbuf_AddBuffer(HBUF *h, int nLen, const char *buf);
+void hbuf_AddHeap(HBUF *h, int nLen, const char *buf);
+
+HLIST *hlist_New();
+HLIST *hlist_SetName(HLIST *h, const char *name);
+const char *hlist_Name(HLIST *h);
+long long hlist_Length(HLIST *h);
+HLIST *hlist_Add(HLIST *h, int len, const void *data);
+HLIST *hlist_AddHeap(HLIST *h, int len, const void *data);
+HLIST *hlist_Push(HLIST *h, int len, const void *data);
+HLIST *hlist_PushHeap(HLIST *h, int len, const void *data);
+void hlist_Delete(HLIST *h);
+HBUF *hlist_ToHBuf(HLIST *h);
+int hlist_WriteFile(HLIST *h, const char *filename);
+const void *hlist_GetBlock(HLIST *h, int *plen);
+const void *hlist_Peek(HLIST *h, int len, int *plen);
+const void *hlist_GetData(HLIST *h, int len);
+int hlist_GetDataToBuffer(HLIST *h, int len, void *buffer);

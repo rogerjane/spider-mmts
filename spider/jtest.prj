@@ -1,0 +1,15 @@
+jtest
+mtjson
+
+
+-I/usr/local/ssl/include
+
+# This next line needs to be in for linux, out for SCO
+#-lssl
+#-lcrypto
+-lmtutil
+-lmtsl3
+-lnpfit
+-lxstring
+
+-L/usr/local/lib

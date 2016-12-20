@@ -1,0 +1,24 @@
+mmts
+#rcache
+#mmts-sqlite
+mmts-contract
+mmts-message
+mmts-utils
+varset
+#sqlite3
+mtjson
+mtchannel
+mtwebsocket
+mtwamp
+mtwamputil
+
+-lmtutil
+-lmtsl3
+#-lldap -llber -lresolv
+
+-lnpfit -lxstring
+-I/usr/local/ssl/include
+-L/usr/local/lib -Bstatic -lz -lssl -lcrypto -Bdynamic
+-ldbase
+-lgen
+-lmtutil -lxstring -ldatetime -lmtfile

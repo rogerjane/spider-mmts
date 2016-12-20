@@ -1,0 +1,68 @@
+:
+
+## 10-05-14 RJ 0.00 Create the spider Certificate Authority
+
+# NB. This should be run in an empty directory and creates everything needed to create client certificates
+
+[ -d demoCA ] && {
+	echo "demoCA already exists - please delete it first!"
+	echo "(I don't want to be responsible for trashing it.)"
+	exit 2;
+}
+
+# Create the environment that 'openssl ca' expects
+mkdir demoCA
+mkdir demoCA/certs
+mkdir demoCA/crl
+mkdir demoCA/newcerts
+mkdir demoCA/private
+echo '01' > demoCA/serial
+:> demoCA/index.txt
+
+# Create the directory for the files that spider will want
+mkdir etc
+
+# Generate CA private key
+
+openssl genrsa -out etc/spiderca.key.pem 2048
+
+# Generate CA certificate
+
+openssl req -new -x509 -days 8000 -key etc/spiderca.key.pem -out etc/spiderca.cert.pem <<EOT
+UK
+Cornwall
+Bodmin
+Microtest Ltd
+SPIDER:CA
+SPIDER
+
+EOT
+
+cp etc/spiderca.key.pem demoCA/private/cakey.pem
+cp etc/spiderca.cert.pem demoCA/cacert.pem
+
+# Create the spider server certificate:
+openssl req -new -key etc/spiderca.key.pem -out spider.req.pem <<EOT
+UK
+Cornwall
+Bodmin
+Microtest Ltd
+SPIDER:SERVER
+SPIDER
+
+
+
+EOT
+
+openssl ca -in spider.req.pem -days 8000 -out etc/spider.cert.pem <<EOT
+y
+y
+EOT
+
+echo "Unless there are glaring errors above, the CA should now be set up."
+echo ""
+echo "The files that spider needs are in etc."
+echo ""
+echo "See the 'spider.howto' file for information on creating client certificates."
+
+exit 0

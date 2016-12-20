@@ -1,0 +1,217 @@
+:
+
+# gh - Generate Header file from a .C file
+# Given the name of a header file, regenerates it to describe the source files
+# which it covers.  The original header file should have been generated using
+# 'ggh'.  The 'gh' command is largely superflous now as the .h file produced
+# contains the code to regenerate itself.  Any, the documentation for the system
+# follows:
+#
+# The process produces and helps maintain a .h file which covers the needs of
+# one or more .c files.  Let's assume we have three source files x.c, y.c and
+# z.c.  These files contain some functions which need to be accessed externally
+# and also some structures which are needed to call those functions and
+# therefore must also appear in the header file.  To further complicate things,
+# the source files need to access other headers which are stored in a directory
+# /usr/pmr/include.  To generate a header file for this situation it is
+# necessary to enclose the structures in the file as follows:
+# 
+# #if 0             /* Assuming the header is to be included in the source */
+# /* START HEADER */
+# typedef struct mystruct {
+#   ...
+# }
+# /* END HEADER */
+# #endif
+#
+# Then the initial header file is generated using:
+#
+#   ggh -I/usr/pmr/include /usr/include/myheader.h x.c y.c z.c 
+#
+# This generates the header file with the necessary information in it.  When
+# the source files are modified and the header needs to be updated, it has the
+# facility of updating itself...  E.g.,
+#
+#   /usr/include/myheader.h
+#
+# entered as a command will update the file.
+#
+# The easiest way to update the file to include more source files is to edit it
+# and add more 'source:' lines in the same style as those which will be found
+# in there already.
+#
+# Rog.  ??/??/94? - 16/3/97.
+
+[ ! "$1" ] && {
+	echo 'gh - v2'
+	echo 'Usage: gh filename.h [CFLAGS]' >&2
+	exit 1
+}
+
+myname=$0
+filename=$1
+shift
+CFLAGS=$*
+dir=`dirname $filename`
+filename=`basename $filename`
+
+[ ! -d "$dir" ] && {
+	echo "gh: Path not found" >&2
+	exit 2
+}
+
+cd $dir						# So relative file references work
+
+head_file=ghh_$$			# Header comments etc.
+verbatim_file=ghv_$$		# Stuff added with START HEADER
+export_file=ghe_$$			# Stuff added with START EXPORT
+proto_file=ghp_$$			# Prototypes added by compiler
+foot_file=ghf_$$			# Footer comments etc.
+
+t_proto=gh1_$$				# Temporary prototype file
+t1=ght1_$$					# Temporary file 1
+
+upper() {
+	basename $* | tr '[a-z].' '[A-Z]_'
+}
+
+output() {
+	echo "$*" >> $tempfile
+}
+
+closeup() {
+	rm -f $filename
+	if [ -x /usr/local/bin/detab ]; then
+		cat $head_file $export_file $verbatim_file $proto_file $foot_file | /usr/local/bin/detab 4 > $filename
+	else
+		cat $head_file $export_file $verbatim_file $proto_file $foot_file > $filename
+	fi
+	chmod 755 $filename
+}
+
+username() {
+	if [ -x /usr/local/bin/realname ]; then
+		echo `logname` - `realname`
+	else
+		logname
+	fi
+}
+
+add_header1() {
+cat >>$head_file <<!
+
+#if 0
+$myname \$0 $CFLAGS
+exit
+#endif
+
+/* *** AUTOMATIC HEADER - ONLY EDIT THE 'source:' LINES ***
+ *
+ * If you need to make alterations, edit the source files then simply execute
+ * this header from a shell.
+ *
+ * Date:   `date`
+ * User:   `username`
+ */
+
+!
+}
+
+add_header2() {
+cat >>$head_file <<!
+
+#ifndef __`upper $filename`
+#define __`upper $filename`
+
+!
+}
+
+add_footer() {
+	echo "\n#endif" >> $foot_file
+}
+
+#		s/.*START EXPORT.*//
+add_export() {
+	cat $1 | sed -n '/START EXPORT/,/END EXPORT/p' | sed -n '
+		1d
+		/END EXPORT/d
+		s/^[^ 	]/extern &/p
+	' >>$export_file
+}
+
+add_verbatim() {
+	cat $1 | sed -n '/START HEADER/,/END HEADER/p' | sed -n '
+		/START HEADER/d
+		/END HEADER/d
+		p
+	' >>$verbatim_file
+}
+
+add_proto() {
+	return			# Not with this compiler, you don't...
+
+	cc -w -Zg $CFLAGS $1 | sed '
+		/^static /d
+		s/\/\*global\*\/[ ]*//
+		s/ ,/, /g
+		s/ )/)/
+		s/\* \*/\*\*/g
+		s/,\([a-zA-Z]\)/, \1/g
+		/main(/ d' > $t_proto
+
+#	I'm sure this following command could be radically simplified.
+	grep 'va_alist)' $1 | sed -n 's/\([a-zA-Z0-9_]*(\)/XXX\1YYY/p'|sed 's/^.*XXX\(.*\)YYY.*$/\1/p'|sed 's/.*/\/\[^a-zA-Z0-9_\]&\/ s\/, int)\/, ...)\//' > $t1
+
+	echo >> $proto_file
+	echo "/* Prototypes from $source */" >> $proto_file
+	if [ -s $t1 ]; then
+		cat $t_proto | sed -f $t1 >> $proto_file
+	else
+		cat $t_proto >> $proto_file
+	fi
+	rm -f $t1 $t_proto
+}
+
+source_list() {	# Extract list of source files from header file
+	cat $1 | awk '
+		$2 == "source:"	{print $3}
+'
+}
+
+add_file() {		# Adds a single source file to the lists	
+	source=$1
+	echo "/* source: $1 */" >> $head_file
+	add_export $1
+	add_verbatim $1
+	add_proto $1
+}
+
+add_files() {		# Adds all mentioned source files to the lists
+	while [ $# -ge 1 ]
+	do
+		add_file $1
+		shift
+	done
+}
+
+tidyup() {
+	rm -f $head_file $export_file $proto_file $verbatim_file $foot_file
+}
+
+# main
+
+# NB. By the time we get here, we are already in the directory
+
+> $head_file
+> $export_file
+> $verbatim_file
+> $proto_file
+> $foot_file
+
+add_header1
+add_files `source_list $filename`
+add_header2
+add_footer
+
+closeup
+tidyup
