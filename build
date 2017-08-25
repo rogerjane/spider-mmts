@@ -1,0 +1,4 @@
+#!/bin/sh
+
+gmake --no-print-directory spotless
+gmake --no-print-directory

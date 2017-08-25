@@ -1,0 +1,65 @@
+#!/bin/sh
+
+## 28-08-17 RJ 0.00 Script to build Spider and MMTS on 'this' server and transport the binaries to devsys:/sm
+
+cd `dirname $0`				# Make sure we're in the directory containing this script
+
+DEST=devsys:/sm				# Where we're going to put the results
+
+case `uname` in
+Linux)
+	system=linux
+	make=make
+	;;
+SCO_SV)
+	system=sco
+	make=gmake
+	;;
+Darwin)
+	system=macos
+	make=make
+	;;
+*)
+	echo "I don't recognise this OS (`uname`)"
+	exit 99
+	;;
+esac
+
+echo Building $system release of Spider and MMTS...
+
+for PASS in 1 2
+do
+	if [ $PASS = 1 ]; then
+		FLAGS=
+		BUILD=$system
+	else
+		FLAGS=-g
+		BUILD="$system-debug"
+	fi
+
+	TMP=/tmp/build-${BUILD}.log
+	rm -f $TMP
+	SEND_LOG=
+	if [ -f $TMP ]; then
+		echo I cannot delete $TMP so there will be no log
+	else
+		SEND_LOG=YES
+	fi
+
+	echo Building ${BUILD} release
+	$make spotless > $TMP 2>&1
+	DEBUG=$FLAGS $make >> $TMP 2>&1
+
+	egrep -i 'error|warning' $TMP
+
+	chmod 755 bin/spider bin/mmts
+	chmod 644 $TMP
+
+	scp -p bin/spider $DEST/spider-${BUILD} >>$TMP 2>&1
+	scp -p bin/mmts $DEST/mmts-${BUILD} >>$TMP 2>&1
+
+	[ "$SEND_LOG" ] && scp -p $TMP $DEST/build-${BUILD}.log 2>/dev/null
+
+done
+
+echo Done - binaries in $DEST.

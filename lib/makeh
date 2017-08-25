@@ -1,0 +1,141 @@
+#!/usr/bin/perl
+
+# Use as makeh filename.c to automatically generate the corresponding .h file
+
+# In the .c file, use the following to pull functions declarations into here:
+# #define API
+# then prefix all function declarations with API as in:
+# API int GetAge()
+# For default arguments, enclose the default in /*...*/ as in:
+# API int GetAge(int personId, date asat/*=NULL*/)
+# The function header (with added trailing ;) and immediately following // comments will be included
+#
+# To enclose blocks of lines specifically, enclose them in:
+# //START HEADER
+# //END HEADER
+
+my $c_linkage = 0;				# Make it 1 to put extern "C" around all the declarations
+
+my $src = $ARGV[0];
+
+my $header = $src;
+$header =~ s/\.c(pp)?$/.h/ or die "Can't turn $src into a header name";
+my $incvar = $header;
+$incvar =~ s/.*\///;
+$incvar = "__".uc $incvar;
+$incvar =~ s/\./_/g;
+
+my $H;
+my $last_line = "\n";
+
+sub hprint($)
+{
+	my ($text) = @_;
+
+	$text =~ s/\s+$//;									# Drop any trailing spaces
+	return if ($text eq '' && $text eq $last_line);		# Don't print two blank lines in a row
+	print $H "$text\n";
+
+	$last_line = $text;
+}
+
+open $H, ">$header";
+open S, $src or die;
+
+my ($se,$mi,$ho,$da,$mo,$ye)=localtime;
+$mo++;
+$ye+=1900;
+
+hprint "#ifndef $incvar";
+hprint "#define $incvar";
+hprint "";
+
+hprint "// *********************************************************************";
+hprint "// WARNING!  This file was made using makeh";
+hprint "// DO NOT EDIT IT DIRECTLY - IT'LL GET OVER-WRITTEN";
+hprint sprintf("// THIS FILE WAS MADE ON %02d-%02d-%04d at %02d:%02d:%02d from %s", $da,$mo,$ye, $ho,$mi,$se, $src);
+hprint "// *********************************************************************";
+
+hprint "";
+
+if ($c_linkage) {
+	hprint "#ifdef __cplusplus";
+	hprint "  extern \"C\" {";
+	hprint "#endif";
+	hprint "";
+}
+
+my @namespaces;
+my $commenting = 0;
+my $haveCommented = 0;
+for (<S>) {
+	chomp;
+
+	if (/^\/\/\s*START HEADER/) {
+		$copy = 1;
+		next;
+	}
+
+	if (/^\/\/\s*END HEADER/) {
+		hprint "";
+		$copy = 0;
+		next;
+	}
+
+	if ($copy) {
+		hprint "$_";
+		next;
+	}
+
+	if (/^API/) {
+		hprint "" if $haveCommented;
+		my $comment;
+		$comment = $1 if (s/(\/\/.*)//);
+		s/{.*//;
+		s/\s+$//;
+		s/^API\s*//;
+		s/\/\*\s*=(.*?)\*\// = $1/g;
+		$_ .= ';';
+		$_ .= $comment if $comment;
+		hprint "$_";
+		$commenting = 1;
+		$haveCommented=0;
+		next;
+	}
+
+	if (/^\s*namespace\s+(\w+)\s*{\s*(\/\/.*)?$/) {
+		hprint "namespace $1 {\n";
+		hprint "\n";
+		push @namespaces, $1;
+	}
+
+	if (/^\s*\/\//) {
+		if ($commenting) {
+			hprint "$_";
+			$haveCommented=1;
+		}
+	} else {
+		$commenting = 0;
+	}
+}
+close S;
+
+if ($#namespaces >= 0) {
+	hprint "\n";
+	for (my $i = $#namespaces; $i>=0; $i--) {
+		hprint "} // Namespace $namespaces[$i]\n";
+	}
+}
+
+if ($c_linkage) {
+	hprint "";
+	hprint "#ifdef __cplusplus";
+	hprint "  }";
+	hprint "#endif";
+}
+
+hprint "";
+hprint "#endif";
+close H;
+
+exit 0;
