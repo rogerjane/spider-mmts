@@ -570,11 +570,11 @@ API const char *firewall_Load(int sock)
 		cp = SkipSpaces((char*)line);
 
 		if (*cp) {
-			char *a = strtok(cp, "\t ");
+			const char *a = strtok(cp, "\t ");
 			if (*a == '[') {
 				char buf[20];
 
-				port = atoi(SkipSpaces(a+1));
+				port = atoi(SkipSpaces((char*)a+1));
 				if (!port) Fatal("Firewall %d: Invalid port specification (%s)", lineno, a);
 				snprintf(buf, sizeof(buf), "%d", port);
 				entry = (firewall_t*)spmap_GetValue(firewall, buf);
@@ -592,10 +592,10 @@ API const char *firewall_Load(int sock)
 			} else {
 				if (!port) Fatal("Firewall %d: No preceding section header", lineno);
 
-				char *b = strtok(NULL, "\t ");
+				const char *b = strtok(NULL, "\t ");
 				if (!b) Fatal("Firewall %d: Only one word on the line", lineno);
 
-				char *c = strtok(NULL, "\t ");
+				const char *c = strtok(NULL, "\t ");
 				if (!c) {							// A two-word entry (CONN)
 					fw_conn_t *conn = NEW(fw_conn_t, 1);
 					conn->lineno = lineno;
@@ -606,8 +606,8 @@ API const char *firewall_Load(int sock)
 					entry->conn[entry->conns]=conn;
 					entry->conns++;
 				} else {							// A five-word entry (CALL)
-					char *d = strtok(NULL, "\t ");
-					char *e = strtok(NULL, "\t ");
+					const char *d = strtok(NULL, "\t ");
+					const char *e = strtok(NULL, "\t ");
 
 					if (!d) {						// Only three words "LAN HTTP accept" - Make it "LAN HTTP * * accept"
 						e=c;
