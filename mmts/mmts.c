@@ -8674,6 +8674,7 @@ int PlainProxy(BIO *io, const char *verb, const char *url)
 		Fatal("Cannot read proxy header");
 
 	SSMAP *headerMap = SetIncomingHeaderFromMime(mimeOut);		// Has a side effect of storing the JWT in the audit log
+	ssmap_Delete(headerMap);									// We only wanted it for the side-effect...
 
 	BIO *ioOut=BuildConnection(address, port, !stricmp(protocol, "https"), 0);	// Give us a connection
 	if (!ioOut) {
@@ -10851,9 +10852,9 @@ szCheck="A";
 		}
 	}
 
+#if 0
 	STACK_OF(SSL_CIPHER) *clientCiphers = SSL_get_client_ciphers(ssl);
 	int nCiphers = sk_SSL_CIPHER_num(clientCiphers);
-#if 0
 	Log("Ciphers in client list = %d", nCiphers);
 	for (int i=0;i<nCiphers;i++) {
 		const SSL_CIPHER *fred = sk_SSL_CIPHER_value(clientCiphers, i);
