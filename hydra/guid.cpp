@@ -353,14 +353,13 @@ API const char *md5_Finish(MD5 *pms)
 // Returns a \0 terminated static string of 32 characters being the lower case hex representation
 {
 	static char result[33];
-	static char *hex = "0123456789abcdef";
 
 	const unsigned char *digest = (unsigned char *)md5_FinishBin(pms);
 	char *p=result;
 	for (int i=0; i<16; i++) {
 		unsigned char c = *digest++;
-		p[0] = hex[c >> 4];
-		p[1] = hex[c & 0x0f];
+		p[0] = _szHex[c >> 4];
+		p[1] = _szHex[c & 0x0f];
 		p+=2;
 	}
 
