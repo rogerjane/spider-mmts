@@ -11,7 +11,7 @@ endif
 ifeq ($(UNAME),Linux)
 	CC:=g++
 	CFLAGS=-Wall $(DEBUG) $(INCLUDES) $(LIBS)
-	LIBS=/usr/local/lib/libssl.a /usr/local/lib/libcrypto.a -lhydra -lz -lm -ldl -lpthread
+	LIBS=/usr/local/lib/libssl.a /usr/local/lib/libcrypto.a -lhydra -lz -lm -ldl -lpthread -lssl -lcrypto
 endif
 
 ifeq ($(UNAME),Darwin)
