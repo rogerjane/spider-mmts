@@ -24,7 +24,7 @@ typedef struct guid {
 // END HEADER
 #endif
 
-static char _szHex[]="0123456789ABCDEF";
+static const char _szHex[]="0123456789ABCDEF";
 
 // [RJ] The md5 source code was found on the internet
 
