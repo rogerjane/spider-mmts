@@ -828,7 +828,7 @@ Log("CH: Entries changed from %d to %d", nfds, entries);
 				if (chan->fdin == chan->fdout) {						// Bi-directional fd
 					chan_Lock(chan);
 					if ((chan->flags & CHAN_OUT) && hlist_Length(chan->outq)) {
-Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name(chan));
+//Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name(chan));
 						fds[nfds].events |= POLLOUT;							// We are an outgoing queue and have stuff to send
 					}
 					chan_Unlock(chan);
@@ -844,7 +844,7 @@ Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name
 
 				chan_Lock(chan);
 				if ((chan->flags & CHAN_OUT) && hlist_Length(chan->outq)) {
-Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name(chan));
+//Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name(chan));
 					fds[nfds].events |= POLLOUT;							// We are an outgoing queue and have stuff to send
 				}
 				chan_Unlock(chan);
