@@ -29,9 +29,11 @@ In the following, for a SCO build, use gmake instead of make as the default sco 
 
 To build everything, sit in the top directory (where this file is) and type:
 
- $ make           Make everything
- $ make clean     Remove intermediate object files
- $ make spotless  'clean' plus binaries, libraries and generated header files
+```bash
+$ make               # Make everything
+$ make clean         # Remove intermediate object files
+$ make spotless      # 'clean' plus binaries, libraries and generated header files
+```
 
 Each individual 'thing' can be compiled by sitting in its directory and using 'make' as above.
 
