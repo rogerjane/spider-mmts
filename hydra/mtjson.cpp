@@ -1654,6 +1654,7 @@ API JSON *json_ParseX(const char **ptext)
 					text--;
 				}
 			}
+			_parse_ObjectDepth--;
 
 			if (err) {
 				json_Delete(json);
