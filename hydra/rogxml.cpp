@@ -3521,26 +3521,28 @@ STATIC rogxpath *rogxpath_NewXPathUnabbrev(rogxml *rx, char *szPath)
 	rogxpath *rxp;
 	rogxlist *rxl=rogxlist_New();
 
-	rogxlist_AddElement(rxl, rx);		// Start with our current position
-	for (;;) {
-		char *szAxis;
-		char *szTest;
-		char *szPredicates;
-		char *szStep;
-		rogxlist *rxlTmp;				// Temp holding
+	if (rx) {
+		rogxlist_AddElement(rxl, rx);		// Start with our current position
+		for (;;) {
+			char *szAxis;
+			char *szTest;
+			char *szPredicates;
+			char *szStep;
+			rogxlist *rxlTmp;				// Temp holding
 
-		szStep=GetStep(&szPath);			// Get step text
-		if (!szStep) break;					// No more steps, so drop out
-		SplitStep(szStep, &szAxis, &szTest, &szPredicates);	// Split up
-//printf("Split '%s' to '%s::%s[%s]'\n", szStep, szAxis, szTest, szPredicates);
-		rxlTmp=TakeStep(rxl, szAxis, szTest);	// Apply main step part
-		rogxlist_Delete(rxl);					// Delete the old list
-		ApplyPredicates(rxlTmp, szPredicates);	// Maybe prune list
-		rxl=rxlTmp;								// Set for next time round
+			szStep=GetStep(&szPath);			// Get step text
+			if (!szStep) break;					// No more steps, so drop out
+			SplitStep(szStep, &szAxis, &szTest, &szPredicates);	// Split up
+	//printf("Split '%s' to '%s::%s[%s]'\n", szStep, szAxis, szTest, szPredicates);
+			rxlTmp=TakeStep(rxl, szAxis, szTest);	// Apply main step part
+			rogxlist_Delete(rxl);					// Delete the old list
+			ApplyPredicates(rxlTmp, szPredicates);	// Maybe prune list
+			rxl=rxlTmp;								// Set for next time round
 
-		free(szAxis);						// Clear out debris
-		free(szTest);
-		free(szPredicates);
+			free(szAxis);						// Clear out debris
+			free(szTest);
+			free(szPredicates);
+		}
 	}
 
 	rxp=rogxpath_NewList(rxl);
