@@ -244,7 +244,7 @@ API void json_Delete(JSON *json)
 	if (json) {
 		if (json->signature != SIGN_JSON) {
 			Log("Deleting something non-JSON at %p (%.4s)", json, &json->signature);
-			fprintf(stderr, "Deleting something non-JSON at %p (%.4s)\n", json, &json->signature);
+			fprintf(stderr, "Deleting something non-JSON at %p (%.4s)\n", json, (const char *)&json->signature);
 			int a=1;a--;a=1/a;
 		} else {
 //Log("Deleting JSON %p (%d), son of %p: %s", json, json->type, json->parent, json_Render(json));
@@ -1584,6 +1584,7 @@ API JSON *json_ParseX(const char **ptext)
 					}
 				}
 			}
+			_parse_ArrayDepth--;
 
 			if (!err && *text != ']') {
 				err = hprintf(NULL, "Unexpected (%c [%#x]) in array", *text, *text);
@@ -1655,6 +1656,7 @@ API JSON *json_ParseX(const char **ptext)
 					text--;
 				}
 			}
+			_parse_ObjectDepth--;
 
 			if (err) {
 				json_Delete(json);
