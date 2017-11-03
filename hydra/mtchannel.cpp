@@ -74,6 +74,9 @@ typedef struct CHANPOOL {
 	SPMAP *nameMap;					// Map of name->channels
 	SPMAP *fdMap;					// Map of fd->channels
 	CHANIDLER *idleQueue;			// Queue of timed events
+	struct CHAN *nudgeChannel;		// Channel used to 'nudge' the polling loop
+	bool polling;					// True while a poll() is in progress
+	pthread_t threadId;				// Id of thread 'owning' this pool
 } CHANPOOL;
 
 typedef struct CHAN {
@@ -95,6 +98,7 @@ typedef struct CHAN {
 	CHAN *connectTo;				// Channel whose outq we used as our inq
 	int flags;						// Bit mask of CHAN_*
 	char deleting;					// 1 if we are currently physically deleting this object
+	pthread_t threadId;				// Id of the thread this is created in
 } CHAN;
 
 //#define chan_IncomingQueue(chan)	(chan->inq)
@@ -197,6 +201,53 @@ API unsigned int chan_Available(CHAN *chan)
 	return result;
 }
 
+API bool chan_PoolAllowNudge(CHANPOOL *pool, int state /*=1*/)
+// Turns on or off 'nudgeability' of the pool
+// This allows the 'chan_Nudge()' function to work and must be called BEFORE the iteration of the event loop
+// where the nudge might be needed.
+// Always returns the previous state
+// Call with 1 	- Make able to nudge
+//			 0 	- Stop being able to nudge
+//			-1 	- No change - just return status
+{
+	bool oldState = pool && pool->nudgeChannel != NULL;
+
+	if (pool) {
+		if (state == 1 && pool->nudgeChannel == NULL) {				// Need to add a nudge channel
+			pool->nudgeChannel = chan_NewLoopback(pool);
+		} else if (state == 0 && pool->nudgeChannel != NULL) {		// Need to remove the nudge channel
+			chan_Delete(pool->nudgeChannel);
+			pool->nudgeChannel = NULL;
+		}
+	}
+
+	return oldState;
+}
+
+API bool chan_PoolNudge(CHANPOOL *pool)
+// if the eventloop is currently waiting for activity, 'nudges' it by sending a byte on the loopback channel.
+{
+	bool done = false;
+
+	if (pool && pool->nudgeChannel && pool->polling) {
+		CHAN *chan = pool->nudgeChannel;
+
+		chan_Lock(chan);
+		free((void*)hlist_GetBlock(chan->inq, NULL));	// Effectively just throws anything away on the incoming queue
+		write(chan->fdout, "!", 1);						// This should come back in the fdin and drop out the poll
+		chan_Unlock(chan);
+
+		done = true;
+	}
+
+	return done;
+}
+
+API bool chan_Nudge(CHAN *chan)
+{
+	return chan ? chan_PoolNudge(chan->pool) : false;
+}
+
 API const char *chan_Peek(CHAN *chan, int bytes, int *pgot)
 // Returns a pointer to a number of bytes in the input buffer up to 'bytes' long
 // DOES NOT remove the data from the buffer.
@@ -249,6 +300,10 @@ STATIC int chan_DataOut(CHAN *chan, int front, int heap, int len, const char *da
 			hlist_AddHeap(chan->outq, len, data);
 Log("CH: Added %d bytes to queue for %s", len, chan ? chan->name : "NULL");
 		}
+
+		// This next is only true if we're threaded and are calling this while chan_EventLoop() is executing a poll()
+		if (chan->pool->polling)
+			chan_PoolNudge(chan->pool);
 	}
 
 	chan_Unlock(chan);
@@ -294,6 +349,9 @@ API CHANPOOL *chan_PoolNew()
 	cp->nameMap = spmap_New();
 	cp->fdMap = spmap_New();
 	cp->idleQueue = NULL;
+	cp->nudgeChannel = NULL;
+	cp->polling = false;
+	cp->threadId = pthread_self();
 
 	return cp;
 }
@@ -509,6 +567,8 @@ API CHANIDLER *chan_PoolCallEvery(CHANPOOL *pool, int period, CHANCB_Idler idler
 	return entry;
 }
 
+// Two convenience functions for those that know a channel, but don't know the pool.
+
 API CHANIDLER *chan_CallAfter(CHAN *channel, int period, CHANCB_Idler idler, void *data)
 {
 	return channel ? chan_PoolCallAfter(channel->pool, period, idler, data) : NULL;
@@ -593,6 +653,7 @@ STATIC CHAN *chan_New(CHANPOOL *cp, int fdin, int fdout, BIO *bio, CHANCB_Pseudo
 	chan->connectFrom = NULL;
 	chan->connectTo = NULL;
 	chan->deleting = 0;
+	chan->threadId = pthread_self();
 	pthread_mutex_init(&chan->queue_mutex, NULL);
 
 	if (cp) chan_PoolAdd(cp, chan);
@@ -625,6 +686,15 @@ API CHAN *chan_NewFd2(CHANPOOL *cp, int fdin, int fdout, int flags)
 // Create a new channel given a pair of file descriptors (may be network or pipe)
 {
 	return chan_New(cp, fdin, fdout, NULL, NULL, flags);
+}
+
+API CHAN *chan_NewLoopback(CHANPOOL *cp)
+// Creates a new loopback channel - everything written on it, immediately comes back
+// This is useful to trigger an iteration on the CHANPOOL loop by sending a byte out the channel
+{
+	int fds[2];
+	pipe(fds);
+	return chan_NewFd2(cp, fds[0], fds[1], CHAN_IN | CHAN_OUT);
 }
 
 API CHAN *chan_NewBio(CHANPOOL *cp, BIO *bio, int flags)
@@ -759,6 +829,86 @@ API void chan_CloseOnEmpty(CHAN *chan)
 		chan->flags |= CHAN_CLOSE;
 }
 
+API void chan_ProcessReceived(CHANPOOL *cp)
+// Processes all incoming queues that are 'dirty' - i.e. have received data since this function was last called
+// Calls the (chan->cb_receiver)() for each until that function doesn't alter the queue
+// All 'dirty' flags are reset on exit from here
+{
+	CHAN *chan;
+
+	spmap_Reset(cp->nameMap);
+	while (spmap_GetNextEntry(cp->nameMap, NULL, (void**)&chan)) {
+		if (chan->flags & CHAN_DIRTY) {
+
+// TODO: I'm not happy with this...  It decides that the cb_receiver has done something depending on whether the queue
+// size has changed.  It's possible that it would take something off it and add something and it would look unchanged when
+// it actually has.
+			for (;;) {								// Call the handler until it doesn't remove anything from the queue
+				chan_Lock(chan);
+				long long beforeLen = hlist_Length(chan->inq);
+				chan_Unlock(chan);
+
+				if (chan->cb_receiver)
+					(chan->cb_receiver)(chan);
+
+				chan_Lock(chan);
+				long long afterLen = hlist_Length(chan->inq);
+				chan_Unlock(chan);
+
+				if (afterLen == beforeLen || beforeLen == 0)		// Stop if queue changed or is empty
+					break;
+			}
+			chan->flags &= ~CHAN_DIRTY;
+		}
+	}
+}
+
+void chan_ExecuteIdlers(CHANPOOL *cp)
+// Executes any idle functions that have come due, re-scheduling if they're set to repeat
+{
+	CHANIDLER *entry = cp->idleQueue;
+
+	if (entry && MicrosecondsNow() >= entry->due) {			// We have an idler function to execute
+		chan_PoolRemoveQueueEntry(cp, entry);
+
+		entry->beingCalled = true;
+		(*entry->fn)(entry->data);
+		entry->beingCalled = false;
+
+		if (entry->repeatPeriod >= 0) {
+			entry->due = MicrosecondsNow()+entry->repeatPeriod;
+			chan_PoolInsertQueueEntry(cp, entry);
+		} else {
+			chan_PoolDeleteQueueEntry(cp, entry);
+		}
+	}
+}
+
+void chan_RemovePendingDeletions(CHANPOOL *cp)
+// Should only be called from chan_EventLoop() because we know nothing is actively using them there
+// Removes and actually deletes all channels that are marked as 'deleting'
+{
+	CHAN *chan;
+
+	// Collect up a set of channels that are pending deletion
+	SSET *deadones = sset_New();
+	spmap_Reset(cp->nameMap);
+	while (spmap_GetNextEntry(cp->nameMap, NULL, (void**)&chan)) {
+		if (chan->deleting) {							// This channel has had chan_Delete() called on it
+			sset_Add(deadones, chan->name);				// Put it in the set to delete in a moment
+		}
+	}
+
+	// Now process our list of ones to delete and delete them
+	const char *rip;
+	while (sset_GetNextEntry(deadones, &rip)) {				// Delete thc channels that should be dead
+		chan = (CHAN*)spmap_GetValue(cp->nameMap, rip);
+		chan_RemoveFromPool(chan);
+		chan_Dealloc(chan);
+	}
+	sset_Delete(deadones);
+}
+
 API int chan_EventLoop(CHANPOOL *cp, bool flushout /*=false*/)
 // 'Runs' the event loop for a channel pool.
 // This will fetch any waiting data from inputs and deliver data in output queues.
@@ -774,6 +924,8 @@ API int chan_EventLoop(CHANPOOL *cp, bool flushout /*=false*/)
 //Log("CH: Entering event loop with %d channel%s", count, count==1?"":"s");
 	for (;;) {			// We'll be doing this until something makes us drop out
 		int timeout = -1;
+
+		// Figure when the next idle event is due so we set the timeout accordingly
 		if (cp->idleQueue && !flushout) {
 			long long due = cp->idleQueue->due;
 			long long now = MicrosecondsNow();
@@ -786,7 +938,6 @@ API int chan_EventLoop(CHANPOOL *cp, bool flushout /*=false*/)
 		int entries = spmap_Count(cp->fdMap);
 
 		if (nfds != entries) {								// Need to (re-)allocate the array if its changed size
-Log("CH: Entries changed from %d to %d", nfds, entries);
 			if (fds) free((char*)fds);
 			fds = NULL;
 
@@ -798,23 +949,7 @@ Log("CH: Entries changed from %d to %d", nfds, entries);
 		nfds = 0;
 		CHAN *chan;
 
-		SSET *deadones = sset_New();						// Collect up a set of channels that are pending deletion
-
-		spmap_Reset(cp->nameMap);
-		while (spmap_GetNextEntry(cp->nameMap, NULL, (void**)&chan)) {
-			if (chan->deleting) {							// This channel has had chan_Delete() called on it
-//Log("CH: Spotted channel %s is on Charon's boat", chan_Name(chan));
-				sset_Add(deadones, chan->name);
-			}
-		}
-
-		const char *rip;
-		while (sset_GetNextEntry(deadones, &rip)) {				// Delete thc channels that should be dead
-			CHAN *chan = (CHAN*)spmap_GetValue(cp->nameMap, rip);
-			chan_RemoveFromPool(chan);
-			chan_Dealloc(chan);
-		}
-		sset_Delete(deadones);
+		chan_RemovePendingDeletions(cp);
 
 		spmap_Reset(cp->nameMap);
 		while (spmap_GetNextEntry(cp->nameMap, NULL, (void**)&chan)) {
@@ -828,7 +963,7 @@ Log("CH: Entries changed from %d to %d", nfds, entries);
 				if (chan->fdin == chan->fdout) {						// Bi-directional fd
 					chan_Lock(chan);
 					if ((chan->flags & CHAN_OUT) && hlist_Length(chan->outq)) {
-Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name(chan));
+//Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name(chan));
 						fds[nfds].events |= POLLOUT;							// We are an outgoing queue and have stuff to send
 					}
 					chan_Unlock(chan);
@@ -844,7 +979,7 @@ Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name
 
 				chan_Lock(chan);
 				if ((chan->flags & CHAN_OUT) && hlist_Length(chan->outq)) {
-Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name(chan));
+//Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name(chan));
 					fds[nfds].events |= POLLOUT;							// We are an outgoing queue and have stuff to send
 				}
 				chan_Unlock(chan);
@@ -866,29 +1001,15 @@ Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name
 			break;
 		}
 
-//if (timeout == -1) { for (int i = 0; i<nfds; i++) { Log("fds[%d]: Waiting on %d with flags %d", i, fds[i].fd, fds[i].events); } }
-
 		// We have our array of 'fd's so now poll them...
 		int haveReceived = 0;									// Count of channels we've received something on
+
+		cp->polling = true;
 		int n = poll(fds, nfds, timeout);
-		if (!flushout) {
-			CHANIDLER *entry = cp->idleQueue;
+		cp->polling = false;
 
-			if (entry && MicrosecondsNow() >= entry->due) {			// We have an idler function to execute
-				chan_PoolRemoveQueueEntry(cp, entry);
-
-				entry->beingCalled = true;
-				(*entry->fn)(entry->data);
-				entry->beingCalled = false;
-
-				if (entry->repeatPeriod >= 0) {
-					entry->due = MicrosecondsNow()+entry->repeatPeriod;
-					chan_PoolInsertQueueEntry(cp, entry);
-				} else {
-					chan_PoolDeleteQueueEntry(cp, entry);
-				}
-			}
-		}
+		if (!flushout)											// Unless we're only flushing output queues ...
+			chan_ExecuteIdlers(cp);								// ... deal with any idle processes
 
 		if (n > 0) {				// There is something coming in or going out
 //Log("CH: %d = poll(%p, %d, %d)", n, fds, nfds, timeout);
@@ -917,7 +1038,7 @@ Log("Have data (%d) waiting for channel %s", hlist_Length(chan->outq), chan_Name
 				if (revents & POLLIN) {
 					if (chan->fn) {							// We're function driven - this should never happen!
 					} else if (chan->flags & CHAN_LISTEN) {	// Incoming network connection
-Log("Poked on network port on channel %d (%d >= %d?)", fd, hlist_Length(chan->inq), chan->minBytes);
+//Log("Poked on network port on channel %d (%d >= %d?)", fd, hlist_Length(chan->inq), chan->minBytes);
 						// Nothing to do - no data to receive and we'll mark it dirty lower down
 					} else if (chan->bio) {					// Using a BIO and we can't find number of pending bytes
 						char buf[10240];						// Read into a 10K buffer for now
@@ -926,7 +1047,7 @@ Log("Poked on network port on channel %d (%d >= %d?)", fd, hlist_Length(chan->in
 						got = BIO_read(chan->bio, buf, sizeof(buf));
 //Log("CH: Read %d byte%s from BIO of %d: %s", got, got==1?"":"s", fd, Printable(got, buf));
 						if (got < 1 && !BIO_should_retry(chan->bio)) {	// We performed a read and got error - EOF
-							Log("CH: Channel %s has nothing more to say", chan_Name(chan));
+//Log("CH: Channel %s has nothing more to say", chan_Name(chan));
 							revents |= POLLHUP;			// Treat it like a HUP
 							revents &= ~POLLIN;
 						}
@@ -969,7 +1090,7 @@ Log("Poked on network port on channel %d (%d >= %d?)", fd, hlist_Length(chan->in
 
 				if (revents & POLLHUP) {				// Here means that the other end has gone away and nothing to read
 					chan = chan_FindByFd(cp, fd);
-Log("CH: Channel %s has gone away", chan->name);
+//Log("CH: Channel %s has gone away", chan->name);
 					chan_Delete(chan);			// Channel has hung up so remove it from the loop
 					// NB. channel is NULL here currently
 					continue;
@@ -985,7 +1106,7 @@ Log("CH: Channel %s has gone away", chan->name);
 //Log("CH: Written %d byte%s to %s: %s", written, written==1?"":"s", chan->name, Printable(written, data));
 						if (written == len) {					// We're done
 							if (chan->flags & CHAN_CLOSE) {
-Log("CH: Closing channel %s because the owner no longer wants it", chan->name);
+//Log("CH: Closing channel %s because the owner no longer wants it", chan->name);
 								chan_Delete(chan);					// Make it go away
 							}
 						} else if (written >= 0) {				// Wrote some of it
@@ -1007,35 +1128,8 @@ Log("CH: Closing channel %s because the owner no longer wants it", chan->name);
 
 //Log("CH: Done the poll, checking for activity on all channels (%d)", spmap_Count(cp->nameMap));
 		// Done the polling part to play with the outside world, now to deal with anything that came in
-		spmap_Reset(cp->nameMap);
 
-		while (spmap_GetNextEntry(cp->nameMap, NULL, (void**)&chan)) {
-			if (chan->flags & CHAN_DIRTY) {
-//Log("CH: Channel %s - flags = %d", chan->name, chan->flags);
-
-// TODO: I'm not happy with this...  It decides that the cb_receiver has done something depending on whether the queue
-// size has changed.  It's possible that it would take something off it and add something and it would look unchanged when
-// it actually has.
-				for (;;) {								// Call the handler until it doesn't remove anything from the queue
-					chan_Lock(chan);
-					long long beforeLen = hlist_Length(chan->inq);
-					chan_Unlock(chan);
-
-//Log("CH: Chan %s: length = %lld, calling %p", chan_Name(chan), beforeLen, chan->cb_receiver);
-					if (chan->cb_receiver)
-						(chan->cb_receiver)(chan);
-
-					chan_Lock(chan);
-					long long afterLen = hlist_Length(chan->inq);
-					chan_Unlock(chan);
-//Log("CH: Chan %s: Before = %lld, after = %lld, called %p", chan_Name(chan), beforeLen, afterLen, chan->cb_receiver);
-
-					if (afterLen == beforeLen || beforeLen == 0)		// Stop if queue changed or is empty
-						break;
-				}
-				chan->flags &= ~CHAN_DIRTY;
-			}
-		}
+		chan_ProcessReceived(cp);
 	} // Main loop (;;)
 
 	return 1;

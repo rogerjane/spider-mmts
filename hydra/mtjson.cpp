@@ -244,6 +244,7 @@ API void json_Delete(JSON *json)
 	if (json) {
 		if (json->signature != SIGN_JSON) {
 			Log("Deleting something non-JSON at %p (%.4s)", json, &json->signature);
+			fprintf(stderr, "Deleting something non-JSON at %p (%.4s)\n", json, &json->signature);
 			int a=1;a--;a=1/a;
 		} else {
 //Log("Deleting JSON %p (%d), son of %p: %s", json, json->type, json->parent, json_Render(json));
@@ -992,8 +993,8 @@ API JSON *json_Copy(JSON *json)
 			int len = json->data.string.len;
 
 			j->data.string.len = len;
-			j->data.string.string = (char*)malloc(len);
-			memcpy((void*)j->data.string.string, json->data.string.string, len);
+			j->data.string.string = (char*)malloc(len+1);
+			memcpy((void*)j->data.string.string, json->data.string.string, len+1);
 		}
 			break;
 		case JSON_INTEGER:

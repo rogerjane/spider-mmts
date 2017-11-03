@@ -3,20 +3,23 @@
 UNAME := $(shell uname)
 ifeq ($(UNAME),SCO_SV)
 	CC:=CC
-	CFLAGS=$(DEBUG) $(INCLUDES) -L$(LIBPATH)
-	LIBS=-lssl -lcrypto -lhydra -lz -lm -ldl -lpthread -lsocket
+	LIBS=-lhydra -lz -lm -ldl -lpthread -lsocket -Bstatic -lssl -lcrypto -Bdynamic
+	CFLAGS=$(DEBUG) $(INCLUDES)
+	LDFLAGS=$(DEBUG) -L$(LIBPATH)
 endif
 
 ifeq ($(UNAME),Linux)
 	CC:=g++
-	CFLAGS=-Wall $(DEBUG) $(INCLUDES) -L$(LIBPATH)
 	LIBS=/usr/local/lib/libssl.a /usr/local/lib/libcrypto.a -lhydra -lz -lm -ldl -lpthread
+	CFLAGS=-Wall $(DEBUG) $(INCLUDES)
+	LDFLAGS=$(DEBUG) -L$(LIBPATH)
 endif
 
 ifeq ($(UNAME),Darwin)
 	CC:=g++
-	CFLAGS=-Wall $(DEBUG) $(INCLUDES) -L$(LIBPATH)
-	LIBS=-lssl -lcrypto -lhydra -lz -lm -ldl -lpthread
+	LIBS=-B,static -lssl -lcrypto -B,dynamic -lhydra -lz -lm -ldl -lpthread
+	CFLAGS=-Wall $(DEBUG) $(INCLUDES)
+	LDFLAGS=$(DEBUG) -L$(LIBPATH)
 endif
 
 ID=mmts
@@ -35,7 +38,7 @@ DEPENDS=$(LIBPATH)/libhydra.a $(SQLITE3)/sqlite3.o
 OBJ=mmts.o mmts-contract.o mmts-message.o mmts-utils.o
 
 $(BIN): $(OBJ) $(DEPENDS)
-	$(CC) $(OBJ) -o $(BIN) $(CFLAGS) $(SQLITE3)/sqlite3.o $(LIBS)
+	$(CC) $(OBJ) -o $(BIN) $(LDFLAGS) $(SQLITE3)/sqlite3.o $(LIBS)
 
 clean:
 	rm -f $(OBJ) *.ti
