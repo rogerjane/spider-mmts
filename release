@@ -4,7 +4,8 @@
 
 cd `dirname $0`				# Make sure we're in the directory containing this script
 
-DEST=devsys:/sm				# Where we're going to put the results
+DESTROOT=devsys:/sm				# Where we're going to put the results
+NAMES="Spider, MMTS, wamper and libhydra.a"
 
 case `uname` in
 Linux)
@@ -25,19 +26,19 @@ Darwin)
 	;;
 esac
 
-echo Building $system release of Spider and MMTS...
+echo Building $system versions of $NAMES for deposit in $DESTROOT...
 
 for PASS in 1 2
 do
 	if [ $PASS = 1 ]; then
 		FLAGS=
-		BUILD=$system
+		type=release
 	else
 		FLAGS=-g
-		BUILD="$system-debug"
+		type=debug
 	fi
 
-	TMP=/tmp/build-${BUILD}.log
+	TMP=/tmp/build.log
 	rm -f $TMP
 	SEND_LOG=
 	if [ -f $TMP ]; then
@@ -46,7 +47,7 @@ do
 		SEND_LOG=YES
 	fi
 
-	echo Building ${BUILD} release
+	echo Building $system $type
 	$make spotless > $TMP 2>&1
 	DEBUG=$FLAGS $make >> $TMP 2>&1
 
@@ -55,11 +56,11 @@ do
 	chmod 755 bin/spider bin/mmts
 	chmod 644 $TMP
 
-	scp -p bin/spider $DEST/spider-${BUILD} >>$TMP 2>&1
-	scp -p bin/mmts $DEST/mmts-${BUILD} >>$TMP 2>&1
+	DEST=$DESTROOT/$system/$type
 
-	[ "$SEND_LOG" ] && scp -p $TMP $DEST/build-${BUILD}.log 2>/dev/null
+	scp -p bin/spider bin/mmts bin/wamper lib/libhydra.a $DEST >>$TMP 2>&1
 
+	[ "$SEND_LOG" ] && scp -p $TMP $DEST 2>/dev/null
+
+	echo $NAMES copied to $DEST
 done
-
-echo Done - binaries in $DEST.

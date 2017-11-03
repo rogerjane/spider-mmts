@@ -1082,8 +1082,8 @@ static int wamp_OnPreamble(CHAN *chan)
 		return 1;
 	}
 
-Log("WA: Preamble being processed - inwardInfo = %p", inwardInfo);
-Log("WA: Stage %d in preamble", inwardInfo->stage);
+//Log("WA: Preamble being processed - inwardInfo = %p", inwardInfo);
+//Log("WA: Stage %d in preamble", inwardInfo->stage);
 	switch (inwardInfo->stage) {
 	case 1:															// Stage 1, initial connection - look for the VERB line
 		{

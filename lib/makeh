@@ -1,5 +1,8 @@
 #!/usr/bin/perl
 
+## 01-01-17 RJ 0.00 Make a header file from a .c or .cpp source
+## 17-08-17 RJ 0.01 Ensure file either doesn't exist or has been made from a previous makeh run
+
 # Use as makeh filename.c to automatically generate the corresponding .h file
 
 # In the .c file, use the following to pull functions declarations into here:
@@ -8,25 +11,17 @@
 # API int GetAge()
 # For default arguments, enclose the default in /*...*/ as in:
 # API int GetAge(int personId, date asat/*=NULL*/)
-# The function header (with added trailing ;) and immediately following // comments will be included
+# The function header (with added trailing ;) and any immediately following // comments will be included
 #
 # To enclose blocks of lines specifically, enclose them in:
 # //START HEADER
 # //END HEADER
 
+my $warning = "// WARNING!  This file was made using makeh";
+
 my $c_linkage = 0;				# Make it 1 to put extern "C" around all the declarations
 
-my $src = $ARGV[0];
-
-my $header = $src;
-$header =~ s/\.c(pp)?$/.h/ or die "Can't turn $src into a header name";
-my $incvar = $header;
-$incvar =~ s/.*\///;
-$incvar = "__".uc $incvar;
-$incvar =~ s/\./_/g;
-
 my $H;
-my $last_line = "\n";
 
 sub hprint($)
 {
@@ -39,6 +34,55 @@ sub hprint($)
 	$last_line = $text;
 }
 
+sub Fatal($)
+{
+	my ($msg)=@_;
+	my $prefix = "makeh: ";
+
+	for (split /\n/, $msg) {
+		print STDERR $prefix,$_,"\n";
+		$prefix = " " x length($prefix);
+	}
+
+	exit 99;
+}
+
+#main()
+
+my $src = $ARGV[0];
+
+my $header = $src;
+$header =~ s/\.c(pp)?$/.h/ or die "Can't turn $src into a header name";
+
+if (-f $header) {				# Previous exists - check it's one of ours
+	if (open H, $header) {
+		my $ok = 0;
+
+		for (<H>) {
+			chomp;
+			s/\r//g;					# In case it's in dos format...
+			if ($_ eq $warning) {
+				$ok = 1;
+				last;
+			}
+		}
+		close H;
+
+		if (!$ok) {
+			Fatal("$header exists but was not made with makeh\nDelete it first if you want to over-write it");
+		}
+	} else {
+		Fatal("$header exists but I can't read it");
+	}
+}
+
+my $incvar = $header;
+$incvar =~ s/.*\///;
+$incvar = "__".uc $incvar;
+$incvar =~ s/\./_/g;
+
+my $last_line = "\n";
+
 open $H, ">$header";
 open S, $src or die;
 
@@ -50,11 +94,13 @@ hprint "#ifndef $incvar";
 hprint "#define $incvar";
 hprint "";
 
-hprint "// *********************************************************************";
-hprint "// WARNING!  This file was made using makeh";
+my $timestamp = sprintf("THIS FILE WAS MADE ON %02d-%02d-%04d at %02d:%02d:%02d from %s", $da,$mo,$ye, $ho,$mi,$se, $src);
+
+hprint "// "."*"x length($timestamp);
+hprint $warning;
 hprint "// DO NOT EDIT IT DIRECTLY - IT'LL GET OVER-WRITTEN";
-hprint sprintf("// THIS FILE WAS MADE ON %02d-%02d-%04d at %02d:%02d:%02d from %s", $da,$mo,$ye, $ho,$mi,$se, $src);
-hprint "// *********************************************************************";
+hprint "// ".$timestamp;
+hprint "// "."*"x length($timestamp);
 
 hprint "";
 

@@ -159,8 +159,9 @@
 // 04-07-17 RJ 2.60 MMTS-6 Fixes problem with NULL first parameter to MessageDescription()
 // 17-08-17 RJ 2.61 When proxying, records any JWT and returns X-MMTSPROXYLOGDIR in the headers
 // 21-08-17 RJ 2.62 Added firewall functionality
+// 20-10-17 RJ 2.63 Subtle uplift in rogxml library to avoid NULL failure under Linux
 
-#define VERSION				"2.62"
+#define VERSION				"2.63"
 
 // TODO: Method of 're-receiving' a message would be nice.
 // TODO: When running, look for mmts.version and copy ourselves into it if necessary
