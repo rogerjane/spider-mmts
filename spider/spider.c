@@ -8123,7 +8123,10 @@ static void leg_OnResult(WAMP *wamp, long long requestId, const char *procedure,
 
 		rogxml_LinkChild(leg_Result, rxResult);
 	} else {			// We have an error
-		leg_Result = SPIDERSystemError(201, uri);
+		const char *errMsg = json_ArrayStringzAt(list, 0);
+		const char *errString = errMsg ? hprintf(NULL, "%s: %s", uri, errMsg) : strdup(uri);
+		leg_Result = SPIDERSystemError(201, errString);
+		szDelete(errString);
 	}
 
 	wamp_Delete(wamp);									// This will make the loop drop out
