@@ -2325,7 +2325,7 @@ STATIC void wamp_NoInvokee(WAMP *wamp, long long requestId, const char *procedur
 
 STATIC void wamp_ReadTestaments(WAMP *w, std::string bucket, bool publish)
 // Reads over (and removes) the testaments
-// If 'publish' then sends publishes them as well
+// If 'publish' then publishes them as well
 {
 //Log("reading testaments for %s", bucket.c_str());
 	testamentCollection::iterator it = w->testaments->find(bucket);

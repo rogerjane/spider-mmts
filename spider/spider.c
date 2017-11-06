@@ -69,8 +69,11 @@
 // 12-05-17 RJ 3.07 xxxxx Updated library functions concerning deletion of WAMP comms stack
 // 02-07-17 RJ 3.08 xxxxx Implemented Spider Cache for legacy calls
 // 16-08-17 RJ 3.09 SPIDER-9 Fixed problem of EAGAIN when writing data to API - resolves problem with large payloads
+// 29-08-17 RJ 3.10 SPIDER-10 Added wamp.conf - 'start=' functionality.
+// 01-09-17 RJ 3.11 SPIDER-10 Updated to understand - 'keepalive=' functionality in wamp.conf
+// 03-11-17 RJ 3.14.00 Cross merging master <-> SPIDER-10 and baselined version numbering
 
-#define VERSION				"3.09"
+#define VERSION				"3.14.00"
 
 // TODO quickly...
 // Stop using usage.sl3
@@ -1489,7 +1492,6 @@ static int config_SetBool(const char *szName, int bState, const char *szComment)
 	return config_SetString(szName, bState ? "Yes" : "No", 0, szComment);
 }
 
-#if USING_MTPOST
 static const char *config_FileGetStrings(const char *szFilename, const char *szName, int multiple)
 // Gets one or more strings from the given file matching the name.
 // Returns a string on the heap if successful or NULL if there is no string or no config file...
@@ -1555,7 +1557,6 @@ static const char *config_FileGetStrings(const char *szFilename, const char *szN
 
 	return result;
 }
-#endif
 
 static const char *config_FileGetString(const char *szFilename, const char *szName)
 // Gets a string from the given file.
@@ -1902,7 +1903,58 @@ static const char *cbac_CanRunApi(const char *szOrganisationProduct, const char 
 	return result;
 }
 
-static void DeleteArgv(const char **argv)
+#if 0			// TODO: Delete me when argv stuff is moved to hydra library
+static void argv_Log(const char *msg, const char **argv)
+// Outputs a log with 'msg', followed by the argv contents
+{
+	const char *log = strdup(msg);
+	if (argv) {
+		const char ** ptr = argv;
+		while (*ptr) {
+			log = hprintf(log, " '%s'", *ptr);
+			ptr++;
+		}
+	}
+
+	Log(log);
+	szDelete(log);
+}
+#endif
+
+static const char **argv_Add(const char **argv, const char *text)
+// Adds the given text to an argv-style list.
+// The text is added as a simple pointer - no assumption that it is on the heap or not.
+// Passing text as NULL does nothing and returns argv.
+// Passing argv as NULL is fine and creates a nice new one (if text != NULL).
+// Returns a new array, freeing the old one so use as: argv = argv_Add(argv, "My text");
+{
+	if (text) {
+		if (!argv) {
+			argv = NEW(const char *, 2);
+			argv[0] = text;
+			argv[1] = NULL;
+		} else {
+			const char **tracker = argv;
+
+			while (*tracker)
+				tracker++;
+			int count = tracker - argv;
+			RENEW(argv, const char *, count+2);
+			argv[count]=text;
+			argv[count+1]=NULL;
+		}
+	}
+
+	return argv;
+}
+
+static const char **argv_AddCopy(const char **argv, const char *text)
+// Adds a copy of text to the argv using argv_Add().  Use this to add strings that are NOT on the heap
+{
+	return argv_Add(argv, text ? strdup(text) : NULL);
+}
+
+static void argv_Delete(const char **argv)
 // Deletes a vector of strings that looks like 'argv', in which every element is a pointer to a string
 // on the heap until we hit a NULL pointer, which indicates the end of the vector.
 {
@@ -2350,7 +2402,7 @@ static void contract_ReadAll(int bForce)
 			szDelete(szFilename);
 			file++;
 		}
-		DeleteArgv(files);
+		argv_Delete(files);
 		bUpdated=1;
 	} else {														// Nothing added/deleted so just check all up to date
 		if (contracts) {
@@ -2773,7 +2825,7 @@ Log("updated(%s) = %d - mtime = %d", filename, updated, st.st_mtime);
 		bin++;
 		filename = *bin;
 	}
-	DeleteArgv(bins);
+	argv_Delete(bins);
 
 	s3_Close(wampDb);
 	Log("Collected WAMP APis");
@@ -3813,8 +3865,8 @@ static char *roginet_ntoa(struct in_addr in)
 typedef struct childinfo_t {
 	int			pid;			// Process ID of the child
 	time_t		tStarted;		// When it started
-	const char *szIp;			// IP that triggered the child
-	const char *szId;			// Message ID the child is dealing with
+	const char **argv;			// If non-null and this child dies, it's restarted with this argv
+	const char *name;			// User-friendly name for logs
 } childinfo_t;
 
 static int nPids=0;
@@ -3856,6 +3908,122 @@ static void InitReadStream(int fd)
 	}
 }
 
+static int child_KillAll(int sig)
+// Kills all the registered child processes, returning the number of processes to which a signal has been sent.
+{
+	int i;
+
+	for (i=0;i<nPids;i++) {
+		argv_Delete(aPid[i].argv);			// Stop it from immediately being re-started!
+		aPid[i].argv = NULL;
+
+		Log("Sending kill %s to %d", SignalName(sig), aPid[i]);
+		kill(aPid[i].pid, sig);				// Send kill signal
+	}
+
+	return nPids;
+}
+
+static int child_Find(int pid)
+// Returns the index of the child in question or -1 if not found
+{
+	int i;
+
+	if (pid) {
+		for (i=0;i<nPids;i++) {
+			if (aPid[i].pid == pid) {
+				return i;
+			}
+		}
+	}
+
+	return -1;
+}
+
+static int child_FindAdd(int pid)
+// Finds the index of the child, adding a new one if not found
+// I.e. always returns a slot
+{
+	int i = child_Find(pid);
+
+	if (i >= 0) return i;
+
+	RENEW(aPid, childinfo_t, nPids+1);
+	aPid[nPids].pid=pid;
+	aPid[nPids].argv=NULL;
+	aPid[nPids].name=NULL;
+
+	return nPids++;
+}
+
+static int child_Add(int pid, const char *name)
+// Adds to the list of child processes so we can report on them and tidy them up when we die
+// If a directly incoming message is being handled then szIp and name will be set
+// Otherwise we're dealing with a retry so szIp will be blank
+{
+	if (pid) {
+		int i = child_FindAdd(pid);
+
+		aPid[i].tStarted=time(NULL);
+		aPid[i].name=name ? strdup(name) : NULL;
+	}
+
+	return nPids;
+}
+
+static void child_Restart(int pid, const char **argv)
+// Sets a child to re-start if it dies using the argv given
+// If argv is NULL, sets it not to restart
+{
+	int i = child_Find(pid);
+
+	if (i >= 0) {
+		argv_Delete(aPid[i].argv);
+		aPid[i].argv = argv;
+	}
+}
+
+static const char **child_GetArgv(int pid)
+// Returns AND REMOVES the argv from a child
+{
+	const char **argv = NULL;
+	int i = child_Find(pid);
+
+	if (i >= 0) {
+		argv = aPid[i].argv;
+		aPid[i].argv = NULL;
+	}
+
+	return argv;
+}
+
+static int child_Forget(int pid)
+// Take the child out of the array but don't bother to deallocate it
+// Returns the number of children now active
+{
+	int i = child_Find(pid);
+
+	if (i >= 0) {
+		if (i<nPids-1) {
+			childinfo_t *ci=aPid+i;
+			argv_Delete(ci->argv);
+			szDelete(ci->name);
+
+			memmove(aPid+i, aPid+i+1, (nPids-i-1)*sizeof(childinfo_t));
+		}
+		nPids--;
+	}
+
+	return nPids;
+}
+
+static const char *child_Name(int pid)
+{
+	int i = child_Find(pid);
+
+	return i >= 0 ? aPid[i].name : "unknown";
+}
+
 static void ReallyExit(int nCode)
 // Does only safe things before leaving
 // Only atomic things that cannot possibly call us back should be in here.
@@ -3882,22 +4050,16 @@ static void Exit(int nCode)
 		if (szPidFile) unlink(szPidFile);       // Stops 'unexpected termination' message from status call
 
 		if (nPids) {
-			int i;
-
 			Log("Daemon exiting: %d child%s to tidy up", nPids, nPids==1?"":"ren");
-			for (i=0;i<nPids;i++) {					// Ask all the children to commit suicide
-				Log("Sending kill %s to %d", SignalName(3), aPid[i]);
-				kill(aPid[i].pid, 3);				// Send kill gently signal
-			}
-			sleep(2);								// Give them chance to cross into Hades
-			Idle();									// Note their deaths...
+			if (child_KillAll(SIGQUIT)) {
+				sleep(2);								// Give them chance to cross into Hades
+				Idle();									// Note their deaths...
 
-			for (i=0;i<nPids;i++) {					// Slaughter any that are still alive
-				Log("Sending kill %s to %d", SignalName(9), aPid[i]);
-				kill(aPid[i].pid, 9);				// Send kill signal
+				if (child_KillAll(SIGKILL)) {			// Slaughter any that are still alive
+					sleep(1);							// Zap them.
+					Idle();								// Note their deaths...
+				}
 			}
-			sleep(1);								// Give them chance to cross into Hades
-			Idle();									// Note their deaths...
 		} else {
 			Log("Daemon exiting: No active children");
 		}
@@ -3963,70 +4125,6 @@ static int SetError(int nErr, const char *szFmt, ...)
 
 static int GetErrorNo()			{ return _nError; }
 static const char *GetErrorStr()	{ return _szError; }
-
-static int child_Find(int pid)
-// Returns the index of the child in question or -1 if not found
-{
-	int i;
-
-	for (i=0;i<nPids;i++) {
-		if (aPid[i].pid == pid) {
-			return i;
-		}
-	}
-
-	return -1;
-}
-
-static int child_FindAdd(int pid)
-// Finds the index of the child, adding a new one if not found
-// I.e. always returns a slot
-{
-	int i = child_Find(pid);
-
-	if (i >= 0) return i;
-
-	RENEW(aPid, childinfo_t, nPids+1);
-	aPid[nPids].pid=pid;
-	aPid[nPids].szIp=NULL;
-	aPid[nPids].szId=NULL;
-
-	return nPids++;
-}
-
-static int child_Add(int pid, const char *szIp, const char *szId)
-// Adds to the list of child processes so we can report on them and tidy them up when we die
-// If a directly incoming message is being handled then szIp and szId will be set
-// Otherwise we're dealing with a retry so szIp will be blank
-{
-	int i = child_FindAdd(pid);
-
-	aPid[i].tStarted=time(NULL);
-	aPid[i].szIp=szIp ? strdup(szIp) : NULL;
-	aPid[i].szId=szId ? strdup(szId) : NULL;
-
-	return nPids;
-}
-
-static int child_Forget(int pid)
-// Take the child out of the array but don't bother to deallocate it
-// Returns the number of children now active
-{
-	int i = child_Find(pid);
-
-	if (i >= 0) {
-		if (i<nPids-1) {
-			childinfo_t *ci=aPid+i;
-			szDelete(ci->szIp);
-			szDelete(ci->szId);
-
-			memmove(aPid+i, aPid+i+1, (nPids-i-1)*sizeof(childinfo_t));
-		}
-		nPids--;
-	}
-
-	return nPids;
-}
 
 static int allow_n = 0;
 static char **allow_ip = NULL;
@@ -5736,7 +5834,7 @@ static void SendHtmlHeader(BIO *io)
 //	BIO_putf(io, "<table border=0 width=100%% bgcolor=#f57023>");
 	BIO_putf(io, "<table border=0 width=100%% bgcolor=#444444>");
 	BIO_putf(io, "<tr>");
-	BIO_putf(io, "<td rowspan=2 colspan=2 align=center><font size=6 color=white>SPIDER v%s.%s - RPC Server (%s)</font>", VERSION, BuildCode(), OS);
+	BIO_putf(io, "<td rowspan=2 colspan=2 align=center><font size=6 color=white>SPIDER v%s (build %s) - RPC Server (%s)</font>", VERSION, BuildCode(), OS);
 	if (szEnvironment) {
 		BIO_putf(io, "<br><font size=3>(environment = %s)</font>", szEnvironment);
 	}
@@ -5788,7 +5886,7 @@ static void SendHttpHeaderX(BIO *io, int nCode, SSMAP *headerMap)
 	sec=atoi(__TIME__+6);
 
 	BIO_putf(io, HttpHeader(nCode));
-	BIO_putf(io,"Server: Microtest Spider %s.%s\r\n", VERSION, BuildCode());
+	BIO_putf(io,"Server: Microtest Spider %s\r\n", VERSION);
 	BIO_putf(io, "Date: %s\r\n", timebuf);
 	BIO_putf(io, "Host: %s:%d\r\n", szHostname, _nIncomingPort);
 	BIO_putf(io,"X-SPIDER-VERSION: %s\r\n", VERSION);
@@ -5825,7 +5923,7 @@ static void SendHttpHeader(BIO *io, int nCode, const char *szContentType, long l
 	sec=atoi(__TIME__+6);
 
 	BIO_putf(io, HttpHeader(nCode));
-	BIO_putf(io,"Server: Microtest Spider %s.%s\r\n", VERSION, BuildCode());
+	BIO_putf(io,"Server: Microtest Spider %s\r\n", VERSION);
 	BIO_putf(io, "Date: %s\r\n", timebuf);
 	BIO_putf(io, "Host: %s:%d\r\n", szHostname, _nIncomingPort);
 	BIO_putf(io,"X-SPIDER-VERSION: %s\r\n", VERSION);
@@ -5914,8 +6012,8 @@ static int ParseURI(const char *szURI, const char ***ppszName, const char ***pps
 	pszName[nParams]=NULL;
 	pszValue[nParams]=NULL;
 
-	if (ppszName) *ppszName=pszName; else DeleteArgv(pszName);		// Assign back names and values if passed pointers
-	if (ppszValue) *ppszValue=pszValue; else DeleteArgv(pszValue);	// weren't NULL, otherwise free them up
+	if (ppszName) *ppszName=pszName; else argv_Delete(pszName);		// Assign back names and values if passed pointers
+	if (ppszValue) *ppszValue=pszValue; else argv_Delete(pszValue);	// weren't NULL, otherwise free them up
 
 	return nParams;
 }
@@ -7974,7 +8072,7 @@ static int DealWithGET(BIO *io, const char *szURI)
 			fclose(fp);
 		} else {
 			MyBIO_puts(io, HttpHeader(403));
-			BIO_putf(io, "Server: Microtest Spider %s.%s\r\n", VERSION, BuildCode());
+			BIO_putf(io, "Server: Microtest Spider %s\r\n", VERSION);
 			MyBIO_puts(io, "\r\n");
 			MyBIO_puts(io, "You are not allowed to do whatever it was you just tried to do.");
 		}
@@ -11035,6 +11133,77 @@ static void BackMeUp()
 
 	szDelete(szDest);
 }
+int ExecInBackground(const char **argv, const char *tag)
+// Given a list with the program binary as the first element and arguments as subsequent elements in an argv-style array
+// Runs the command in the background and does an empty wait() so it doesn't zombie.
+// Returns the process ID of the executed process
+{
+	int pid = 0;
+
+	if (argv) {
+		int err = access(argv[0], 1);
+
+		if (err) {
+			Log("Cannot find process %s - not starting", argv[0]);
+		} else {
+			pid = spiderFork(tag);
+
+			if (!pid) {
+				Log("Executing '%s'", argv[0]);
+				execvp(argv[0], (char * const *)argv);
+				Log("Failed to execute '%s'", argv[0]);
+				exit(0);
+			}
+		}
+	}
+
+	return pid;
+}
+
+static void StartWampApis()
+// Reads etc/wamp.conf and starts all start= commands found within
+{
+	const char *binary;
+
+	// Two passes that do mostly the same thing - the first for 'start' entries, the second for 'keepalive' entries
+	for (int pass = 1; pass <= 2; pass++) {
+		const char *binaries = config_FileGetStrings("etc/wamp.conf", pass == 1 ? "start" : "keepalive", 1);
+
+		if (binaries) {
+			for (binary=binaries;*binary;binary=szz_Next(binary)) {
+				char *command = strdup(binary);
+
+				const char **argv = NULL;
+				const char *word = strtok(command, " ");
+				if (*word == '/') {
+					Log("start and keepalivkeepalive commands cannot start with / (%s)", word);
+					continue;
+				}
+				const char *cmd = hprintf(NULL, "%s/%s", "/usr/mt/spider/wamp", word);
+				word = cmd;
+				while (word) {
+					argv = argv_AddCopy(argv, word);
+					word = strtok(NULL, " ");
+				}
+				szDelete(cmd);
+
+				int childPid = ExecInBackground(argv, pass == 1 ? "STARTER" : "KEEPER");
+				child_Add(childPid, argv[0]);
+				if (pass == 2) {						// We might want to restart it
+					child_Restart(childPid, argv);
+				} else {
+					argv_Delete(argv);
+				}
+				szDelete(command);
+
+//			wamp_Connect(daemon_channel_pool, binary, mtpost_OnConnected);		// Client is connected in OnPubsubConnection
+
+			}
+			szDelete(binaries);
+		}
+	}
+
+}
 
 static int OnInwardWampConnected(WAMP *wamp, const char *mesg)
 {
@@ -11160,9 +11329,13 @@ static int OnChannelConnected(CHAN *chan)
 			Exit(0);
 		}
 
+		const char *name = hprintf(NULL, "%d from %s", port->nPort, _szSenderIp);
 		// Remember the child process so we can take it with us when we die etc.
-		child_Add(childPid, _szSenderIp, NULL);
-		Log("Agent %d processing connection from %s", childPid, _szSenderIp);
+		child_Add(childPid, name);
+
+		Log("Agent %d processing connection %s", childPid, name);
+		szDelete(name);
+
 		if (fd != -1)
 			close(fd);							// Child will take care of it
 	}
@@ -11193,7 +11366,7 @@ static void BeDaemon()
 		}
 	}
 
-	if (bIsDaemon) chan_PoolCallEvery(daemon_channel_pool, 1000, Idler, NULL);
+	chan_PoolCallEvery(daemon_channel_pool, 1000, Idler, NULL);
 
 	wamp_RegisterInternalCallee("spider", "prefix", "spider.", OnWampSpider, NULL);
 
@@ -11201,6 +11374,9 @@ static void BeDaemon()
 	if (bIsPubsub)
 		mtpost_Init();
 #endif
+
+	if (bIsPubsub)
+		StartWampApis();						// Start up any configured APIs
 
 	chan_EventLoop(daemon_channel_pool);
 	Log("Daemon finished");
@@ -11265,7 +11441,7 @@ static void StartDaemon(char bRestart, bool foreground = false)
 	}
 
 	Log("===========================================================================");
-	Log("Spider %s.%s for " OS " (Made " __TIME__ " on " __DATE__ ", using %s)", VERSION, BuildCode(), SSLeay_version(SSLEAY_VERSION));
+	Log("Spider %s (build %s) for " OS " (Made " __TIME__ " on " __DATE__ ", using %s)", VERSION, BuildCode(), SSLeay_version(SSLEAY_VERSION));
 
 	UpdateWampApiTable();
 
@@ -11434,6 +11610,7 @@ static void msc_ArchiveOldDirs(int verbose)
 
 static void Idle()
 // We arrive here a couple times a second.
+// Either bIsDaemon OR bIsPubsub will be true.
 {
 	int childpid;
 	int status;
@@ -11442,6 +11619,32 @@ static void Idle()
 
 	nCounter++;
 
+	while ((childpid = wait3(&status, WNOHANG, &rusage)) > 0) {
+		int nChildren;
+		int code = WEXITSTATUS(status);
+		int signal = WTERMSIG(status);
+		const char *szStatus;
+		const char *name = child_Name(childpid);
+
+		if (!code && !signal) {
+			szStatus=strdup("exited OK");
+		} else if (code) {
+			szStatus = hprintf(NULL, "exited with error %d", code);
+		} else {
+			szStatus = hprintf(NULL, "died by signal %d (%s)", code, FullSignalName(code));
+		}
+		const char **argv = child_GetArgv(childpid);
+		nChildren = child_Forget(childpid);
+		Log("Child %d (%s) %s (%d child%s now active)", childpid, name, szStatus, nChildren, nChildren==1?"":"ren");
+		szDelete(szStatus);
+		if (argv) {
+			int pid = ExecInBackground(argv, "KEEPER");
+			Log("Restarting %d as process %d (%s)", childpid, pid, argv[0]);
+			child_Add(pid, argv[0]);
+			child_Restart(pid, argv);
+		}
+	}
+
 	if (bIsDaemon) {
 		// Don't put anything that doesn't relate to time here - look further down
 
@@ -11449,23 +11652,6 @@ static void Idle()
 			ReadEnvironmentFile("etc/environment");
 		}
 
-		while ((childpid = wait3(&status, WNOHANG, &rusage)) > 0) {
-			int nChildren;
-			int code = WEXITSTATUS(status);
-			int signal = WTERMSIG(status);
-			const char *szStatus;
-
-			if (!code && !signal) {
-				szStatus=strdup("exited OK");
-			} else if (code) {
-				szStatus = hprintf(NULL, "exited with error %d", code);
-			} else {
-				szStatus = hprintf(NULL, "died by signal %d (%s)", code, FullSignalName(code));
-			}
-			nChildren = child_Forget(childpid);
-			Log("Child %d %s (%d child%s now active)", childpid, szStatus, nChildren, nChildren==1?"":"ren");
-			szDelete(szStatus);
-		}
 
 		if (nCounter %20 == 2) {						// Every 10 seconds, first check 1 second in
 			CheckWeAreDaemon();
