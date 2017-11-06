@@ -71,8 +71,9 @@
 // 16-08-17 RJ 3.09 SPIDER-9 Fixed problem of EAGAIN when writing data to API - resolves problem with large payloads
 // 29-08-17 RJ 3.10 SPIDER-10 Added wamp.conf - 'start=' functionality.
 // 01-09-17 RJ 3.11 SPIDER-10 Updated to understand - 'keepalive=' functionality in wamp.conf
+// 03-11-17 RJ 3.14.00 Cross merging master <-> SPIDER-10 and baselined version numbering
 
-#define VERSION				"3.11"
+#define VERSION				"3.14.00"
 
 // TODO quickly...
 // Stop using usage.sl3
@@ -5833,7 +5834,7 @@ static void SendHtmlHeader(BIO *io)
 //	BIO_putf(io, "<table border=0 width=100%% bgcolor=#f57023>");
 	BIO_putf(io, "<table border=0 width=100%% bgcolor=#444444>");
 	BIO_putf(io, "<tr>");
-	BIO_putf(io, "<td rowspan=2 colspan=2 align=center><font size=6 color=white>SPIDER v%s.%s - RPC Server (%s)</font>", VERSION, BuildCode(), OS);
+	BIO_putf(io, "<td rowspan=2 colspan=2 align=center><font size=6 color=white>SPIDER v%s (build %s) - RPC Server (%s)</font>", VERSION, BuildCode(), OS);
 	if (szEnvironment) {
 		BIO_putf(io, "<br><font size=3>(environment = %s)</font>", szEnvironment);
 	}
@@ -5885,7 +5886,7 @@ static void SendHttpHeaderX(BIO *io, int nCode, SSMAP *headerMap)
 	sec=atoi(__TIME__+6);
 
 	BIO_putf(io, HttpHeader(nCode));
-	BIO_putf(io,"Server: Microtest Spider %s.%s\r\n", VERSION, BuildCode());
+	BIO_putf(io,"Server: Microtest Spider %s\r\n", VERSION);
 	BIO_putf(io, "Date: %s\r\n", timebuf);
 	BIO_putf(io, "Host: %s:%d\r\n", szHostname, _nIncomingPort);
 	BIO_putf(io,"X-SPIDER-VERSION: %s\r\n", VERSION);
@@ -5922,7 +5923,7 @@ static void SendHttpHeader(BIO *io, int nCode, const char *szContentType, long l
 	sec=atoi(__TIME__+6);
 
 	BIO_putf(io, HttpHeader(nCode));
-	BIO_putf(io,"Server: Microtest Spider %s.%s\r\n", VERSION, BuildCode());
+	BIO_putf(io,"Server: Microtest Spider %s\r\n", VERSION);
 	BIO_putf(io, "Date: %s\r\n", timebuf);
 	BIO_putf(io, "Host: %s:%d\r\n", szHostname, _nIncomingPort);
 	BIO_putf(io,"X-SPIDER-VERSION: %s\r\n", VERSION);
@@ -8071,7 +8072,7 @@ static int DealWithGET(BIO *io, const char *szURI)
 			fclose(fp);
 		} else {
 			MyBIO_puts(io, HttpHeader(403));
-			BIO_putf(io, "Server: Microtest Spider %s.%s\r\n", VERSION, BuildCode());
+			BIO_putf(io, "Server: Microtest Spider %s\r\n", VERSION);
 			MyBIO_puts(io, "\r\n");
 			MyBIO_puts(io, "You are not allowed to do whatever it was you just tried to do.");
 		}
@@ -11440,7 +11441,7 @@ static void StartDaemon(char bRestart, bool foreground = false)
 	}
 
 	Log("===========================================================================");
-	Log("Spider %s.%s for " OS " (Made " __TIME__ " on " __DATE__ ", using %s)", VERSION, BuildCode(), SSLeay_version(SSLEAY_VERSION));
+	Log("Spider %s (build %s) for " OS " (Made " __TIME__ " on " __DATE__ ", using %s)", VERSION, BuildCode(), SSLeay_version(SSLEAY_VERSION));
 
 	UpdateWampApiTable();
 
