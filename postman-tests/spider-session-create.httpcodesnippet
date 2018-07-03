@@ -1,0 +1,6 @@
+POST /mtrpc HTTP/1.1
+Host: 10.198.166.133:4510
+Cache-Control: no-cache
+Postman-Token: eb17e119-e44f-445d-91ae-013bddbfd0b3
+
+<SPIDER-RPC _function="session.create"/>

@@ -1,0 +1,8 @@
+POST /mtrpc HTTP/1.1
+Host: 10.198.166.133:4510
+Content-Type: application/xml
+Cache-Control: no-cache
+Postman-Token: 4a4bfcc2-6280-414f-8810-c811480d508b
+
+<SPIDER-RPC _function="wamp.mtcode.status" RPC_SESSIONID="tc_wampMtcodeTxMtcodeReadcode"/>
+

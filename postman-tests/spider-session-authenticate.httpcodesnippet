@@ -1,0 +1,6 @@
+POST /mtrpc HTTP/1.1
+Host: 10.198.166.133:4510
+Cache-Control: no-cache
+Postman-Token: f3bc3278-3ee8-4ef9-a09a-486a291c13a5
+
+<SPIDER-RPC _function="session.authenticate" RPC_SESSIONID="35025" practiceSiteCode="Microt" login="pm1" password="pm1"/>
